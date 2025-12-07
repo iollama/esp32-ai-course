@@ -133,26 +133,19 @@ Create a `config.h` file in your project folder with:
 ## 📁 Project Structure
 
 The project uses modular architecture with these components:
-- **Main sketch (.ino)** - Core application logic and state machine
+- **speaker_test/speaker_test.ino** - Test sketch for TTS playback
 - **config.h** - Credentials and hardware configuration
-- **AudioHandler** - I2S audio input/output management
-- **OpenAIClient** - API communication wrapper
-- **WiFiManager** - Network connection handling
-- **MultiPartStream** - Custom class for Whisper API uploads
+- **FFat filesystem** - Local storage for downloaded TTS audio files
 
 ## 🎮 Usage
 
-### Operation Flow
+### Operation Flow (Speaker Test)
 
-1. **Initialization**: Device connects to WiFi, syncs time via NTP, initializes audio
-2. **Ready State**: System awaits button press
-3. **Recording**: Hold button to record (max 5-10 seconds)
-4. **Processing**: 
-   - Audio → Whisper API → Transcribed text
-   - Text + Context → GPT-4o mini → AI response
-   - Response → TTS API → Audio stream
-5. **Playback**: Response plays through speaker
-6. **Context Storage**: Response saved for conversation continuity
+1. **Initialization**: Device connects to WiFi, syncs time via NTP, initializes FFat and audio
+2. **TTS Request**: Sends test sentence to OpenAI TTS API
+3. **Download**: TTS audio (MP3) downloads to FFat filesystem (~350KB)
+4. **Playback**: Audio plays from local file through speaker
+5. **Monitoring**: Loop tracks playback progress with periodic status updates
 
 ### LED Status Indicators (optional)
 
@@ -170,13 +163,13 @@ The project uses modular architecture with these components:
 ### Why ESP32-audioI2S Library?
 
 This library dramatically simplifies the project by providing:
-- Direct OpenAI TTS integration via `audio.openai_speech()` method
+- File-based audio playback via `audio.connecttoFS()` method
 - Automatic format detection and decoding (MP3, AAC, FLAC, WAV)
-- Built-in streaming buffer management
+- Built-in buffer management for smooth playback
 - No manual PCM data handling required
 - Dedicated audio task for smooth playback
 
-Without this library, you'd need to manually handle MP3 decoding, buffer management, and streaming - adding significant complexity.
+**Note**: The speaker test uses file-based playback instead of streaming (`audio.openai_speech()`) for more reliable playback of large audio files. TTS audio is downloaded to FFat filesystem first, then played from the local file.
 
 ### Multi-Core Architecture
 
@@ -189,10 +182,9 @@ This separation ensures smooth audio playback without network interruptions.
 ### Buffer Configuration
 
 Proper buffer sizing prevents audio dropouts:
-- **Input Buffer**: 32KB for microphone capture
-- **Output Buffer**: 256KB for TTS streaming
-- **Recording Buffer**: 5-10 seconds (allocated in PSRAM)
-- **DMA Buffers**: 8 × 1024 bytes for I2S transfers
+- **Input Buffer**: 64KB for file playback (larger for reliability)
+- **FFat Storage**: 9.9MB available for audio files
+- **DMA Buffers**: Managed by ESP32-audioI2S library
 
 ### Audio Processing
 
@@ -203,10 +195,11 @@ Proper buffer sizing prevents audio dropouts:
 - Uses custom MultiPartStream class to avoid memory issues
 
 **Speaker Output (MAX98357A):**
-- ESP32-audioI2S library handles all decoding
+- TTS audio downloads to FFat filesystem first (~350KB MP3)
+- ESP32-audioI2S library plays from local file via `connecttoFS()`
 - Supports multiple formats (MP3, AAC, Opus, FLAC)
+- File-based playback eliminates network-related jitter
 - Automatic resampling if needed
-- Built-in jitter prevention
 
 ## 🔧 API Integration
 
@@ -225,11 +218,14 @@ Proper buffer sizing prevents audio dropouts:
 - Max tokens: 150 for concise responses
 
 ### Text-to-Speech API
-- Handled by ESP32-audioI2S library
+- Endpoint: `/v1/audio/speech`
+- Download approach: HTTPClient streams MP3 to FFat filesystem
 - Models: "tts-1" (fast) or "tts-1-hd" (high quality)
 - Voices: alloy, echo, fable, onyx, nova, shimmer
 - Speed: 0.25 to 4.0 (1.0 = normal)
-- Formats: MP3, Opus, AAC, FLAC (auto-decoded)
+- Formats: MP3 (primary), Opus, AAC, FLAC
+- Playback: ESP32-audioI2S `connecttoFS()` plays from local file
+- File-based approach prevents race conditions with long audio
 
 ## 🐛 Troubleshooting
 

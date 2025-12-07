@@ -81,7 +81,7 @@
 #define SERIAL_BAUD_RATE 115200
 
 // NTP Time Sync (required for HTTPS)
-#define NTP_SERVER "pool.ntp.org"
+#define NTP_SERVER "time.google.com"
 #define GMT_OFFSET_SEC 0
 #define DAYLIGHT_OFFSET_SEC 0
 
