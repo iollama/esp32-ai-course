@@ -17,6 +17,9 @@
 #include <FFat.h>
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
+#include <esp_wifi.h>
+#include <esp_system.h>
+#include <esp_task_wdt.h>
 #include "Audio.h"
 #include "../config.h"
 
@@ -33,9 +36,13 @@ void setup() {
   Serial.begin(SERIAL_BAUD_RATE);
   delay(1000);
 
+  // Disable watchdog for Core 0 (audio processing core)
+  esp_task_wdt_deinit();
+
   Serial.println("\n=================================");
   Serial.println("ESP32-S3 Speaker Test");
   Serial.println("=================================\n");
+  Serial.println("✓ Watchdog timer disabled");
 
   // Initialize FFat
   if (!FFat.begin(true)) {
@@ -63,6 +70,9 @@ void setup() {
 void loop() {
   // Audio processing loop
   audio.loop();
+
+  // Give CPU time back to system
+  delay(1);
 
   // Track when audio actually starts playing
   if (audio.isRunning() && !audioStarted) {
@@ -116,14 +126,34 @@ void connectWiFi() {
     Serial.print("Connecting to WiFi: ");
     Serial.println(WIFI_SSID);
 
-    WiFi.mode(WIFI_STA);
+    WiFi.mode(WIFI_STA);  // Initialize WiFi hardware first
+    delay(100);  // Give WiFi hardware time to initialize
+
+    // Print MAC address after WiFi initialization (only on first attempt)
+    if (retry == 0) {
+      Serial.print("ESP32 MAC Address: ");
+      Serial.println(WiFi.macAddress());
+      Serial.println();
+    }
+
+    WiFi.setTxPower(WIFI_POWER_17dBm);  // Maximum TX power (19.5 dBm)
     WiFi.setSleep(false);  // Disable power saving
 
     // Add delay before first connection attempt
     if (retry == 0) {
-      delay(500);
+      WiFi.disconnect(true);
+      delay(1000);
     }
-    WiFi.setTxPower(WIFI_POWER_19_5dBm);
+
+    if (0) {
+      Serial.println("This is a static IP, Please remvoe these lines!!!");
+      // add static ip 
+      IPAddress local_IP(192, 168, 68, 50);
+      IPAddress gateway(192, 168, 68, 1);
+      IPAddress subnet(255, 255, 255, 0);
+      IPAddress primaryDNS(8, 8, 8, 8); 
+      WiFi.config(local_IP, gateway, subnet, primaryDNS);
+    }
     WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
 
     int attempts = 0;
@@ -151,13 +181,15 @@ void connectWiFi() {
 
   // All retries exhausted
   Serial.println("\n\n✗ WiFi connection failed after 3 attempts!");
+  Serial.print("\nFailed. Error code: ");
+  Serial.println(WiFi.status()); 
   Serial.println("\nPlease check:");
   Serial.println("  1. SSID and password in config.h");
   Serial.println("  2. Router is 2.4GHz (ESP32 doesn't support 5GHz)");
   Serial.println("  3. Router is powered on and in range");
   Serial.println("  4. No special characters in WiFi password");
   Serial.println("\nSystem halted. Reset to try again.");
-  while(1) delay(1000);
+  while(1) delay(5000);
 }
 
 void syncTime() {
@@ -192,9 +224,9 @@ void initAudio() {
   // Set volume (0-21, default 12)
   audio.setVolume(15);  // ~70% volume
 
-  // Increase buffer size to prevent jitter/underruns
+  // Increase buffer size to prevent jitter/underruns and reduce CPU load
   audio.setConnectionTimeout(10000, 5000);   // 10s timeout, 5s reconnect (longer for large text)
-  audio.setInBufferSize(65536);              // 64KB input buffer for large MP3 files
+  audio.setInBufferSize(131072);             // 128KB input buffer (increased from 64KB to reduce watchdog pressure)
 
   Serial.println("✓ Audio initialized");
   Serial.print("Volume: 15/21");
@@ -240,6 +272,10 @@ bool downloadTTSToFile(const char* text, const char* filename) {
   int len = https.getSize();
   Serial.printf("Response size: %d bytes\n", len);
 
+  // Add diagnostic
+  Serial.printf("Connected: %d\n", https.connected());
+  Serial.printf("Stream available: %d\n", https.getStreamPtr()->available());
+
   // Open file for writing
   File file = FFat.open(filename, "w");
   if (!file) {
@@ -252,13 +288,24 @@ bool downloadTTSToFile(const char* text, const char* filename) {
   WiFiClient* stream = https.getStreamPtr();
   uint8_t buffer[1024];
   int bytesWritten = 0;
+  int loopCount = 0;
+  int noDataCount = 0;  // Track consecutive loops with no data
+
+  Serial.println("Starting download loop...");
 
   while (https.connected() && (len > 0 || len == -1)) {
     size_t size = stream->available();
+
+    if (loopCount % 100 == 0) {  // Debug every 100 iterations
+      Serial.printf("Loop %d: connected=%d, available=%d, written=%d\n",
+                    loopCount, https.connected(), size, bytesWritten);
+    }
+
     if (size) {
       int c = stream->readBytes(buffer, min((size_t)sizeof(buffer), size));
       file.write(buffer, c);
       bytesWritten += c;
+      noDataCount = 0;  // Reset no-data counter when we receive data
 
       if (len > 0) {
         len -= c;
@@ -268,9 +315,27 @@ bool downloadTTSToFile(const char* text, const char* filename) {
       if (bytesWritten % 10240 == 0) {
         Serial.print(".");
       }
+    } else {
+      noDataCount++;
+
+      // For chunked encoding (len == -1), exit if no data for 3 seconds
+      if (len == -1 && noDataCount > 1000 && bytesWritten > 0) {
+        Serial.println("\n✓ Download complete (no more data)");
+        break;
+      }
     }
+
     delay(1);
+    loopCount++;
+
+    // Timeout after 30 seconds of no data at all
+    if (loopCount > 30000 && bytesWritten == 0) {
+      Serial.println("\n✗ Download timeout - no data received");
+      break;
+    }
   }
+
+  Serial.printf("\nDownload loop exited after %d iterations\n", loopCount);
 
   Serial.println();
   Serial.printf("✓ Downloaded %d bytes to %s\n", bytesWritten, filename);
