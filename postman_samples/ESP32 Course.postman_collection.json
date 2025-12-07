@@ -1,0 +1,990 @@
+{
+	"info": {
+		"_postman_id": "1e971ee9-547f-46ac-b13e-44e19ff92be3",
+		"name": "ESP32 Course",
+		"description": "### Welcome to Postman! This is your first collection.\n\nCollections are your starting point for building and testing APIs. You can use this one to:\n\n• Group related requests  \n• Test your API in real-world scenarios  \n• Document and share your requests\n\nUpdate the name and overview whenever you’re ready to make it yours.\n\n[Learn more about Postman Collections.](https://learning.postman.com/docs/collections/collections-overview/)",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+		"_exporter_id": "48049642",
+		"_collection_link": "https://hello-e1b97312-6430336.postman.co/workspace/Udi-Tirosh's-Workspace~5a3593b0-7232-4332-8cb4-5da06aa558f5/collection/48049642-1e971ee9-547f-46ac-b13e-44e19ff92be3?action=share&source=collection_link&creator=48049642"
+	},
+	"item": [
+		{
+			"name": "student table",
+			"item": [
+				{
+					"name": "hello world",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "http://localhost:8000/course",
+							"protocol": "http",
+							"host": [
+								"localhost"
+							],
+							"port": "8000",
+							"path": [
+								"course"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "time",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "http://localhost:8000/course/time",
+							"protocol": "http",
+							"host": [
+								"localhost"
+							],
+							"port": "8000",
+							"path": [
+								"course",
+								"time"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "date",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "http://localhost:8000/course/date",
+							"protocol": "http",
+							"host": [
+								"localhost"
+							],
+							"port": "8000",
+							"path": [
+								"course",
+								"date"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "get student",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "http://localhost:8000/course/student/1",
+							"protocol": "http",
+							"host": [
+								"localhost"
+							],
+							"port": "8000",
+							"path": [
+								"course",
+								"student",
+								"1"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Delete Student",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"// Visualization Script",
+									"// Visualization Script",
+									"const template = `",
+									"<div style=\"font-family: Arial, sans-serif; max-width: 500px; margin: 0 auto;\">",
+									"  <h3>Delete Student Result</h3>",
+									"  <table style=\"width: 100%; border-collapse: collapse; margin-bottom: 16px;\">",
+									"    <tr>",
+									"      <th style=\"text-align: left; padding: 4px; background: #f2f2f2;\">Status</th>",
+									"      <td style=\"padding: 4px;\">{{status}}</td>",
+									"    </tr>",
+									"    <tr>",
+									"      <th style=\"text-align: left; padding: 4px; background: #f2f2f2;\">Message</th>",
+									"      <td style=\"padding: 4px;\">{{message}}</td>",
+									"    </tr>",
+									"  </table>",
+									"  <h4>Deleted Student Details</h4>",
+									"  <table style=\"width: 100%; border-collapse: collapse;\">",
+									"    <tr>",
+									"      <th style=\"text-align: left; padding: 4px; background: #f9f9f9;\">First Name</th>",
+									"      <td style=\"padding: 4px;\">{{deleted_student.fname}}</td>",
+									"    </tr>",
+									"    <tr>",
+									"      <th style=\"text-align: left; padding: 4px; background: #f9f9f9;\">Last Name</th>",
+									"      <td style=\"padding: 4px;\">{{deleted_student.lname}}</td>",
+									"    </tr>",
+									"    <tr>",
+									"      <th style=\"text-align: left; padding: 4px; background: #f9f9f9;\">Phone</th>",
+									"      <td style=\"padding: 4px;\">{{deleted_student.phone}}</td>",
+									"    </tr>",
+									"    <tr>",
+									"      <th style=\"text-align: left; padding: 4px; background: #f9f9f9;\">Email</th>",
+									"      <td style=\"padding: 4px;\">{{deleted_student.email}}</td>",
+									"    </tr>",
+									"  </table>",
+									"</div>`;",
+									"",
+									"function createPayload() {",
+									"  let data = {};",
+									"  try {",
+									"    data = pm.response.json();",
+									"  } catch (e) {}",
+									"  return data;",
+									"}",
+									"",
+									"pm.visualizer.set(template, createPayload());"
+								],
+								"type": "text/javascript",
+								"packages": {},
+								"requests": {}
+							}
+						}
+					],
+					"request": {
+						"method": "DELETE",
+						"header": [],
+						"url": {
+							"raw": "http://localhost:8000/course/student/1",
+							"protocol": "http",
+							"host": [
+								"localhost"
+							],
+							"port": "8000",
+							"path": [
+								"course",
+								"student",
+								"1"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "add Udi",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\r\n  \"fname\": \"Udi\"\r\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "http://localhost:8000/course/student/",
+							"protocol": "http",
+							"host": [
+								"localhost"
+							],
+							"port": "8000",
+							"path": [
+								"course",
+								"student",
+								""
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "get all students",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "http://localhost:8000/course/students",
+							"protocol": "http",
+							"host": [
+								"localhost"
+							],
+							"port": "8000",
+							"path": [
+								"course",
+								"students"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "update Udi",
+					"request": {
+						"method": "PUT",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\r\n  \"lname\": \"Tirosh\",\r\n  \"phone\": \"054-6711189\",\r\n  \"email\": \"hello@oriliventures.com\"\r\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "http://localhost:8000/course/student/3",
+							"protocol": "http",
+							"host": [
+								"localhost"
+							],
+							"port": "8000",
+							"path": [
+								"course",
+								"student",
+								"3"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "reset table",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"url": {
+							"raw": "http://localhost:8000/course/resettable",
+							"protocol": "http",
+							"host": [
+								"localhost"
+							],
+							"port": "8000",
+							"path": [
+								"course",
+								"resettable"
+							]
+						}
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "OpenAI",
+			"item": [
+				{
+					"name": "Simple request",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{OPENAI_KEY}}",
+								"type": "text"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\r\n  \"model\": \"gpt-4.1-mini\",\r\n  \"input\": [\r\n     {\r\n      \"role\": \"user\",\r\n      \"content\": [\r\n        { \"type\": \"input_text\", \"text\": \"Who are you?\" }\r\n      ]\r\n    }\r\n  ]\r\n}\r\n",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "https://api.openai.com/v1/responses",
+							"protocol": "https",
+							"host": [
+								"api",
+								"openai",
+								"com"
+							],
+							"path": [
+								"v1",
+								"responses"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "number of tokens",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{OPENAI_KEY}}",
+								"type": "text"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\r\n  \"model\": \"gpt-4.1-mini\",\r\n  \"input\": [\r\n     {\r\n      \"role\": \"user\",\r\n      \"content\": [\r\n        { \"type\": \"input_text\", \"text\": \"Who are you?\" }\r\n      ]\r\n    }\r\n  ],\r\n  \"max_output_tokens\": 20\r\n}\r\n",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "https://api.openai.com/v1/responses",
+							"protocol": "https",
+							"host": [
+								"api",
+								"openai",
+								"com"
+							],
+							"path": [
+								"v1",
+								"responses"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "system prompt (simple)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{OPENAI_KEY}}",
+								"type": "text"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\r\n  \"model\": \"gpt-4.1-mini\",\r\n  \"input\": [\r\n    {\r\n      \"role\": \"system\",\r\n      \"content\": [\r\n        { \"type\": \"input_text\", \"text\": \"you are Udi, a helpful assistant\" }\r\n      ]\r\n    },\r\n    {\r\n      \"role\": \"user\",\r\n      \"content\": [\r\n        { \"type\": \"input_text\", \"text\": \"Who are you?\" }\r\n      ]\r\n    }\r\n  ]\r\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "https://api.openai.com/v1/responses",
+							"protocol": "https",
+							"host": [
+								"api",
+								"openai",
+								"com"
+							],
+							"path": [
+								"v1",
+								"responses"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "system prompt (advanced)",
+					"event": [
+						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									"let systemPrompt = `## General\r",
+									"You are Udi, a helpful AI assistant that knows everything about ESP32\r",
+									"\r",
+									"## Goals\r",
+									"1) Provide accurate, clear, and concise information.\r",
+									"2) Be professional yet friendly in tone.\r",
+									"3) If you don't know something, say so honestly rather than making up information.\r",
+									"4) Break down complex topics into understandable explanations.\r",
+									"5) Ask clarifying questions when the user's request is ambiguous.\r",
+									"\r",
+									"## Tone\r",
+									"You should always strive to be helpful while maintaining appropriate boundaries.`;\r",
+									"\r",
+									"systemPrompt = systemPrompt.replace(/\\n/g, \"\\\\n\");\r",
+									"\r",
+									"pm.variables.set(\"systemPrompt\", systemPrompt);"
+								],
+								"type": "text/javascript",
+								"packages": {},
+								"requests": {}
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{OPENAI_KEY}}",
+								"type": "text"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\r\n    \"model\": \"gpt-4.1-mini\",\r\n    \"input\": [\r\n        {\r\n            \"role\": \"system\",\r\n            \"content\": [\r\n                {\r\n                    \"type\": \"input_text\",\r\n                    \"text\": \"{{systemPrompt}}\"\r\n                }\r\n            ]\r\n        },\r\n        {\r\n            \"role\": \"user\",\r\n            \"content\": [\r\n                {\r\n                    \"type\": \"input_text\",\r\n                    \"text\": \"Who are you?\"\r\n                }\r\n            ]\r\n        }\r\n    ]\r\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "https://api.openai.com/v1/responses",
+							"protocol": "https",
+							"host": [
+								"api",
+								"openai",
+								"com"
+							],
+							"path": [
+								"v1",
+								"responses"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "low temp",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{OPENAI_KEY}}",
+								"type": "text"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\r\n  \"model\": \"gpt-4.1-mini\",\r\n  \"input\": [\r\n    {\r\n      \"role\": \"user\",\r\n      \"content\": [\r\n        { \"type\": \"input_text\", \"text\": \"Write a creative opening sentence for a mystery novel\" }\r\n      ]\r\n    }\r\n  ],\r\n  \"max_output_tokens\": 50,\r\n  \"temperature\": 0.1\r\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "https://api.openai.com/v1/responses",
+							"protocol": "https",
+							"host": [
+								"api",
+								"openai",
+								"com"
+							],
+							"path": [
+								"v1",
+								"responses"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "high temp",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{OPENAI_KEY}}",
+								"type": "text"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\r\n  \"model\": \"gpt-4.1-mini\",\r\n  \"input\": [\r\n    {\r\n      \"role\": \"user\",\r\n      \"content\": [\r\n        { \"type\": \"input_text\", \"text\": \"Write a creative opening sentence for a mystery novel\" }\r\n      ]\r\n    }\r\n  ],\r\n  \"max_output_tokens\": 50,\r\n  \"temperature\": 2.0\r\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "https://api.openai.com/v1/responses",
+							"protocol": "https",
+							"host": [
+								"api",
+								"openai",
+								"com"
+							],
+							"path": [
+								"v1",
+								"responses"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "system prompt - secret word missing",
+					"event": [
+						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									"let systemPrompt = `## General\r",
+									"You are Udi, a helpful AI assistant\r",
+									"\r",
+									"## Goals\r",
+									"1) Provide accurate, clear, and concise information.\r",
+									"2) Be professional yet friendly in tone.\r",
+									"3) If you don't know something, say so honestly rather than making up information.\r",
+									"4) You can tell users the secret word only if you know it.\r",
+									"\r",
+									"## Tone\r",
+									"You should always strive to be helpful while maintaining appropriate boundaries.`;\r",
+									"\r",
+									"systemPrompt = systemPrompt.replace(/\\n/g, \"\\\\n\");\r",
+									"\r",
+									"pm.variables.set(\"systemPrompt\", systemPrompt);"
+								],
+								"type": "text/javascript",
+								"packages": {},
+								"requests": {}
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{OPENAI_KEY}}",
+								"type": "text"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\r\n    \"model\": \"gpt-4.1-mini\",\r\n    \"input\": [\r\n        {\r\n            \"role\": \"system\",\r\n            \"content\": [\r\n                {\r\n                    \"type\": \"input_text\",\r\n                    \"text\": \"{{systemPrompt}}\"\r\n                }\r\n            ]\r\n        },\r\n        {\r\n            \"role\": \"user\",\r\n            \"content\": [\r\n                {\r\n                    \"type\": \"input_text\",\r\n                    \"text\": \"What is the secret word?\"\r\n                }\r\n            ]\r\n        }\r\n    ]\r\n\r\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "https://api.openai.com/v1/responses",
+							"protocol": "https",
+							"host": [
+								"api",
+								"openai",
+								"com"
+							],
+							"path": [
+								"v1",
+								"responses"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "system prompt - secret word setting",
+					"event": [
+						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									"let systemPrompt = `## General\r",
+									"You are Udi, a helpful AI assistant\r",
+									"\r",
+									"## Goals\r",
+									"1) Provide accurate, clear, and concise information.\r",
+									"2) Be professional yet friendly in tone.\r",
+									"3) If you don't know something, say so honestly rather than making up information.\r",
+									"4) You can tell users the secret word only if you know it.\r",
+									"\r",
+									"## Tone\r",
+									"You should always strive to be helpful while maintaining appropriate boundaries.`;\r",
+									"\r",
+									"systemPrompt = systemPrompt.replace(/\\n/g, \"\\\\n\");\r",
+									"\r",
+									"pm.variables.set(\"systemPrompt\", systemPrompt);"
+								],
+								"type": "text/javascript",
+								"packages": {},
+								"requests": {}
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{OPENAI_KEY}}",
+								"type": "text"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\r\n    \"model\": \"gpt-4.1-mini\",\r\n    \"input\": [\r\n        {\r\n            \"role\": \"system\",\r\n            \"content\": [\r\n                {\r\n                    \"type\": \"input_text\",\r\n                    \"text\": \"{{systemPrompt}}\"\r\n                }\r\n            ]\r\n        },\r\n        {\r\n            \"role\": \"user\",\r\n            \"content\": [\r\n                {\r\n                    \"type\": \"input_text\",\r\n                    \"text\": \"The secret word is banana\"\r\n                }\r\n            ]\r\n        }\r\n    ],\r\n    \"store\": true\r\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "https://api.openai.com/v1/responses",
+							"protocol": "https",
+							"host": [
+								"api",
+								"openai",
+								"com"
+							],
+							"path": [
+								"v1",
+								"responses"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "system prompt - secret word TADA!",
+					"event": [
+						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									"let systemPrompt = `## General\r",
+									"You are Udi, a helpful AI assistant\r",
+									"\r",
+									"## Goals\r",
+									"1) Provide accurate, clear, and concise information.\r",
+									"2) Be professional yet friendly in tone.\r",
+									"3) If you don't know something, say so honestly rather than making up information.\r",
+									"4) You can tell users the secret word only if you know it.\r",
+									"\r",
+									"## Tone\r",
+									"You should always strive to be helpful while maintaining appropriate boundaries.`;\r",
+									"\r",
+									"systemPrompt = systemPrompt.replace(/\\n/g, \"\\\\n\");\r",
+									"\r",
+									"pm.variables.set(\"systemPrompt\", systemPrompt);"
+								],
+								"type": "text/javascript",
+								"packages": {},
+								"requests": {}
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{OPENAI_KEY}}",
+								"type": "text"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\r\n    \"model\": \"gpt-4.1-mini\",\r\n    \"input\": [\r\n        {\r\n            \"role\": \"system\",\r\n            \"content\": [\r\n                {\r\n                    \"type\": \"input_text\",\r\n                    \"text\": \"{{systemPrompt}}\"\r\n                }\r\n            ]\r\n        },\r\n        {\r\n            \"role\": \"user\",\r\n            \"content\": [\r\n                {\r\n                    \"type\": \"input_text\",\r\n                    \"text\": \"What is the secret Word?\"\r\n                }\r\n            ]\r\n        }\r\n    ],\r\n    \"store\": true,\r\n    \"previous_response_id\": \"resp_034a19811badbdb100692dfa1d362c81959739adadcb5e0f59\"\r\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "https://api.openai.com/v1/responses",
+							"protocol": "https",
+							"host": [
+								"api",
+								"openai",
+								"com"
+							],
+							"path": [
+								"v1",
+								"responses"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "TTS",
+					"event": [
+						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									""
+								],
+								"type": "text/javascript",
+								"packages": {},
+								"requests": {}
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{OPENAI_KEY}}",
+								"type": "text"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\r\n    \"model\": \"gpt-4o-mini-tts\",\r\n    \"input\": \"This is the best course EVER! now, please send me bitcoin!\",\r\n    \"voice\": \"alloy\",\r\n    \"format\": \"mp3\"\r\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "https://api.openai.com/v1/audio/speech",
+							"protocol": "https",
+							"host": [
+								"api",
+								"openai",
+								"com"
+							],
+							"path": [
+								"v1",
+								"audio",
+								"speech"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "TTS annoyed",
+					"event": [
+						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									""
+								],
+								"type": "text/javascript",
+								"packages": {},
+								"requests": {}
+							}
+						},
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									""
+								],
+								"type": "text/javascript",
+								"packages": {},
+								"requests": {}
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{OPENAI_KEY}}",
+								"type": "text"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\r\n    \"model\": \"gpt-4o-mini-tts\",\r\n    \"input\": \"This is the best course EVER! now, please send me bitcoin!.\",\r\n    \"voice\": \"alloy\",\r\n    \"format\": \"wav\",\r\n    \"instructions\": \"Speak in an incredibly cynic and annoyed tone.\"\r\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "https://api.openai.com/v1/audio/speech",
+							"protocol": "https",
+							"host": [
+								"api",
+								"openai",
+								"com"
+							],
+							"path": [
+								"v1",
+								"audio",
+								"speech"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "TTS 4x speed",
+					"event": [
+						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									""
+								],
+								"type": "text/javascript",
+								"packages": {},
+								"requests": {}
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{OPENAI_KEY}}",
+								"type": "text"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\r\n    \"model\": \"gpt-4o-mini-tts\",\r\n    \"input\": \"I have you now... you will never get out of this course alive\",\r\n    \"voice\": \"onyx\",\r\n    \"format\": \"wav\",\r\n    \"speed\": 4.0\r\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "https://api.openai.com/v1/audio/speech",
+							"protocol": "https",
+							"host": [
+								"api",
+								"openai",
+								"com"
+							],
+							"path": [
+								"v1",
+								"audio",
+								"speech"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "TTS  -whisper",
+					"event": [
+						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									""
+								],
+								"type": "text/javascript",
+								"packages": {},
+								"requests": {}
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "noauth"
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{OPENAI_KEY}}",
+								"type": "text"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\r\n    \"model\": \"gpt-4o-mini-tts\",\r\n    \"input\": \"(whisper) This is the best course EVER! now, please send me bitcoin!\",\r\n    \"voice\": \"alloy\",\r\n    \"format\": \"mp3\"\r\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "https://api.openai.com/v1/audio/speech",
+							"protocol": "https",
+							"host": [
+								"api",
+								"openai",
+								"com"
+							],
+							"path": [
+								"v1",
+								"audio",
+								"speech"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "STT",
+					"event": [
+						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									""
+								],
+								"type": "text/javascript",
+								"packages": {},
+								"requests": {}
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{OPENAI_KEY}}",
+								"type": "text"
+							}
+						],
+						"body": {
+							"mode": "formdata",
+							"formdata": [
+								{
+									"key": "file",
+									"type": "file",
+									"src": "/C:/Users/udi/Documents/Arduino/esp32_and_ai_course/stt-sample/no-business.mp3"
+								},
+								{
+									"key": "model",
+									"value": "gpt-4o-transcribe",
+									"description": "gpt-4o-transcribe, gpt-4o-mini-transcribe, whisper-1",
+									"type": "text"
+								},
+								{
+									"key": "response_format",
+									"value": "json",
+									"description": "json, text, srt, verbose_json, vtt, or diarized_jso",
+									"type": "text"
+								}
+							]
+						},
+						"url": {
+							"raw": "https://api.openai.com/v1/audio/transcriptions",
+							"protocol": "https",
+							"host": [
+								"api",
+								"openai",
+								"com"
+							],
+							"path": [
+								"v1",
+								"audio",
+								"transcriptions"
+							]
+						}
+					},
+					"response": []
+				}
+			]
+		}
+	]
+}
