@@ -150,9 +150,10 @@ void loop() {
     float rms = sqrt((float)sum_squares / samples_count);
 
     // Normalize to percentage (adjust scaling as needed)
-    // Max 24-bit value is 8,388,607
-    float peak_percent = (float)peak / 8388607.0 * 100.0;
-    float rms_percent = rms / 8388607.0 * 100.0;
+    // Max 24-bit value is 8,388,607, but typical speech is much lower
+    // Scale to make typical values more visible (using 500,000 as "100%")
+    float peak_percent = (float)peak / 500000.0 * 100.0;
+    float rms_percent = rms / 100000.0 * 100.0;
 
     // Display results
     displayAudioLevels(peak, rms, peak_percent, rms_percent, samples_count);
@@ -188,8 +189,10 @@ void displayAudioLevels(int32_t peak, float rms, float peak_percent, float rms_p
   Serial.print("]");
 
   // Add status indicator
-  if (rms_percent > 5.0) {
+  if (rms_percent > 2.0) {
     Serial.print(" SOUND");
+  } else if (rms_percent > 0.5) {
+    Serial.print(" noise");
   } else {
     Serial.print(" quiet");
   }
