@@ -8,7 +8,7 @@ A push-to-talk AI voice assistant built with ESP32-S3 that integrates OpenAI's W
 - **Speech Recognition**: OpenAI Whisper API converts speech to text accurately
 - **AI Responses**: GPT-4o mini generates intelligent, context-aware responses
 - **Voice Synthesis**: Natural-sounding speech output via OpenAI TTS
-- **Conversation Memory**: Maintains context between interactions
+- **Conversation Memory**: Maintains context between interactions using response api previous response field 
 - **Real-Time Processing**: Optimized for minimal latency
 
 ## 🛠 Hardware Components
