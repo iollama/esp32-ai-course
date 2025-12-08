@@ -57,8 +57,9 @@ Install the following libraries via the Arduino Library Manager or PlatformIO:
 1.  **ESP32-audioI2S** by Schreibfaul1 (Handles TTS streaming and MP3 decoding).
 2.  **ArduinoJson** (Handles API JSON parsing).
 
-### 2. Configuration (`config.h`)
-Rename `config.h.example` to `config.h` (if applicable) or edit the existing file. You **must** provide your credentials:
+### Hardware testing 
+1. mic_test - checks the INMP441 I2S microphone
+2. speaker_test - checks the MAX98357A I2S Amplifier and OPENAI connection
 
 ```cpp
 #define WIFI_SSID "YOUR_WIFI_NAME"
