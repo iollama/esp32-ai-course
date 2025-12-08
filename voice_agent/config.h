@@ -36,6 +36,7 @@
 
 // Chat API Settings
 #define CHAT_INSTRUCTIONS "You are a helpful voice assistant. Keep responses concise and natural for speech."
+#define CHAT_MAX_OUTPUT_TOKENS 20
 
 // =====================================
 // Hardware Pin Definitions

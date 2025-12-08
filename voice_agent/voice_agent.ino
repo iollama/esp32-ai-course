@@ -17,6 +17,7 @@
 // ===== INCLUDES =====
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
+#include <HTTPClient.h>
 #include <time.h>
 #include <driver/i2s_std.h>
 #include <ArduinoJson.h>
@@ -67,7 +68,7 @@ bool buttonWasPressed = false;
 i2s_chan_handle_t i2s_mic_handle = nullptr;
 
 // Conversation memory
-String previousAssistantResponse = "";
+String previousResponseId = "";  // Store response ID for context
 unsigned long lastInteractionTime = 0;
 
 // Error handling
@@ -119,7 +120,6 @@ void speakResponse(String text);
 // Audio processing
 WAVHeader createWAVHeader(uint32_t sampleCount);
 String parseWhisperResponse(String response);
-String parseChatResponse(String response);
 
 // Network functions
 String readHTTPResponse(WiFiClientSecure& client);
@@ -645,66 +645,122 @@ String getChatResponse(String userMessage) {
   currentState = PROCESSING_CHAT;
   Serial.println("Getting AI response...");
 
+  HTTPClient http;
   WiFiClientSecure client;
   client.setInsecure();
-  client.setTimeout(API_TIMEOUT_MS / 1000);  // Convert ms to seconds
 
-  Serial.print("Connecting to api.openai.com:443...");
-  if (!client.connect("api.openai.com", 443)) {
-    Serial.println(" FAILED");
-    Serial.printf("WiFi status: %d\n", WiFi.status());
-    return "";
+  // Build API URL
+  String url = "https://" + String(OPENAI_API_HOST) + CHAT_ENDPOINT;
+  http.begin(client, url);
+
+  // Set headers
+  http.addHeader("Content-Type", "application/json");
+  http.addHeader("Authorization", "Bearer " + String(OPENAI_API_KEY));
+
+  // Build JSON request using ArduinoJson
+  // Need larger document for nested structure
+  StaticJsonDocument<2048> requestDoc;
+  requestDoc["model"] = CHAT_MODEL;
+  requestDoc["store"] = true;
+  requestDoc["max_output_tokens"] = CHAT_MAX_OUTPUT_TOKENS;
+
+  // Add previous_response_id if we have conversation context
+  if (previousResponseId.length() > 0) {
+    requestDoc["previous_response_id"] = previousResponseId;
   }
-  Serial.println(" Connected");
 
-  // Build JSON payload with conversation context
-  String payload = "{";
-  payload += "\"model\":\"" + String(CHAT_MODEL) + "\",";
-  payload += "\"messages\":[";
+  // Build input array with system and user messages
+  JsonArray input = requestDoc.createNestedArray("input");
 
   // System message
-  payload += "{\"role\":\"system\",\"content\":\"You are a helpful voice assistant. Keep responses concise and natural for speech.\"}";
+  JsonObject systemMsg = input.createNestedObject();
+  systemMsg["role"] = "system";
+  JsonArray systemContent = systemMsg.createNestedArray("content");
+  JsonObject systemText = systemContent.createNestedObject();
+  systemText["type"] = "input_text";
+  systemText["text"] = CHAT_INSTRUCTIONS;
 
-  // Previous assistant response for context (if exists)
-  if (previousAssistantResponse.length() > 0) {
-    payload += ",{\"role\":\"assistant\",\"content\":\"";
-    payload += escapeJSON(previousAssistantResponse);
-    payload += "\"}";
+  // User message
+  JsonObject userMsg = input.createNestedObject();
+  userMsg["role"] = "user";
+  JsonArray userContent = userMsg.createNestedArray("content");
+  JsonObject userText = userContent.createNestedObject();
+  userText["type"] = "input_text";
+  userText["text"] = userMessage;
+
+  // Serialize JSON to string
+  String payload;
+  serializeJson(requestDoc, payload);
+
+  Serial.print("Request payload: ");
+  Serial.println(payload);
+
+  // Send POST request
+  int httpCode = http.POST(payload);
+
+  if (httpCode != HTTP_CODE_OK && httpCode != 200) {
+    Serial.printf("HTTP Error: %d\n", httpCode);
+    http.end();
+    return "";
   }
 
-  // Current user message
-  payload += ",{\"role\":\"user\",\"content\":\"";
-  payload += escapeJSON(userMessage);
-  payload += "\"}";
+  // Get response
+  String response = http.getString();
+  http.end();
 
-  payload += "],";
-  payload += "\"temperature\":" + String(CHAT_TEMPERATURE) + ",";
-  payload += "\"max_tokens\":" + String(CHAT_MAX_TOKENS);
-  payload += "}";
+  Serial.print("Response: ");
+  Serial.println(response);
 
-  // Send HTTP request
-  client.print("POST /v1/chat/completions HTTP/1.1\r\n");
-  client.print("Host: api.openai.com\r\n");
-  client.print("Authorization: Bearer ");
-  client.print(OPENAI_API_KEY);
-  client.print("\r\n");
-  client.print("Content-Type: application/json\r\n");
-  client.print("Content-Length: ");
-  client.print(payload.length());
-  client.print("\r\n\r\n");
-  client.print(payload);
+  // Parse JSON response using ArduinoJson
+  StaticJsonDocument<4096> responseDoc;
+  DeserializationError error = deserializeJson(responseDoc, response);
 
-  // Read response
-  String response = readHTTPResponse(client);
-  client.stop();
-
-  // Parse and store response
-  String aiResponse = parseChatResponse(response);
-
-  if (aiResponse.length() > 0) {
-    previousAssistantResponse = aiResponse;  // Store for next turn
-    lastInteractionTime = millis();
+  if (error) {
+    Serial.print("JSON parse failed: ");
+    Serial.println(error.c_str());
+    return "";
   }
+
+  // Extract response ID for context
+  if (responseDoc.containsKey("id")) {
+    previousResponseId = responseDoc["id"].as<String>();
+  }
+
+  // Extract output text from: output[0].content[0].text
+  if (!responseDoc.containsKey("output")) {
+    Serial.println("No output field in response");
+    return "";
+  }
+
+  JsonArray output = responseDoc["output"];
+  if (output.size() == 0) {
+    Serial.println("Empty output array");
+    return "";
+  }
+
+  JsonObject firstOutput = output[0];
+  if (!firstOutput.containsKey("content")) {
+    Serial.println("No content in first output");
+    return "";
+  }
+
+  JsonArray content = firstOutput["content"];
+  if (content.size() == 0) {
+    Serial.println("Empty content array");
+    return "";
+  }
+
+  JsonObject firstContent = content[0];
+  if (!firstContent.containsKey("text")) {
+    Serial.println("No text in first content");
+    return "";
+  }
+
+  String aiResponse = firstContent["text"].as<String>();
+
+  Serial.print("AI: \"");
+  Serial.print(aiResponse);
+  Serial.println("\"");
 
   return aiResponse;
 }
@@ -779,49 +835,6 @@ String parseWhisperResponse(String response) {
   Serial.println("\"");
 
   return transcription;
-}
-
-String parseChatResponse(String response) {
-  // Find JSON body (after HTTP headers)
-  int bodyStart = response.indexOf("\r\n\r\n");
-  if (bodyStart == -1) {
-    Serial.println("Invalid response format");
-    return "";
-  }
-
-  String jsonBody = response.substring(bodyStart + 4);
-
-  // Parse JSON with ArduinoJson
-  StaticJsonDocument<1024> doc;
-  DeserializationError error = deserializeJson(doc, jsonBody);
-
-  if (error) {
-    Serial.print("JSON parse failed: ");
-    Serial.println(error.c_str());
-    Serial.println("Response body:");
-    Serial.println(jsonBody.substring(0, 200));
-    return "";
-  }
-
-  // Navigate JSON path: choices[0].message.content
-  if (!doc.containsKey("choices") || doc["choices"].size() == 0) {
-    Serial.println("No choices in response");
-    return "";
-  }
-
-  JsonObject choice = doc["choices"][0];
-  if (!choice.containsKey("message") || !choice["message"].containsKey("content")) {
-    Serial.println("No content field in response");
-    return "";
-  }
-
-  String content = choice["message"]["content"].as<String>();
-
-  Serial.print("AI: \"");
-  Serial.print(content);
-  Serial.println("\"");
-
-  return content;
 }
 
 // ===== NETWORK FUNCTIONS =====
