@@ -35,7 +35,7 @@
 
 // Chat API Settings
 #define CHAT_TEMPERATURE 0.7
-#define CHAT_MAX_TOKENS 150
+#define CHAT_MAX_TOKENS 20
 
 // =====================================
 // Hardware Pin Definitions
