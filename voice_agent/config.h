@@ -23,20 +23,19 @@
 // API Endpoints
 #define OPENAI_API_HOST "api.openai.com"
 #define WHISPER_ENDPOINT "/v1/audio/transcriptions"
-#define CHAT_ENDPOINT "/v1/chat/completions"
+#define CHAT_ENDPOINT "/v1/responses"
 #define TTS_ENDPOINT "/v1/audio/speech"
 
 // Model Configuration
 #define WHISPER_MODEL "whisper-1"
 #define WHISPER_LANGUAGE "en"  // ISO-639-1 language code (en, es, fr, de, etc.)
-#define CHAT_MODEL "gpt-4o-mini"
+#define CHAT_MODEL "gpt-4.1-mini"
 #define TTS_MODEL "tts-1"  // Options: "tts-1" (fast) or "tts-1-hd" (high quality)
 #define TTS_VOICE "alloy"  // Options: alloy, echo, fable, onyx, nova, shimmer
 #define TTS_SPEED 1.0      // Range: 0.25 to 4.0 (1.0 = normal)
 
 // Chat API Settings
-#define CHAT_TEMPERATURE 0.7
-#define CHAT_MAX_TOKENS 20
+#define CHAT_INSTRUCTIONS "You are a helpful voice assistant. Keep responses concise and natural for speech."
 
 // =====================================
 // Hardware Pin Definitions
