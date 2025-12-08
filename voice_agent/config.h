@@ -28,6 +28,7 @@
 
 // Model Configuration
 #define WHISPER_MODEL "whisper-1"
+#define WHISPER_LANGUAGE "en"  // ISO-639-1 language code (en, es, fr, de, etc.)
 #define CHAT_MODEL "gpt-4o-mini"
 #define TTS_MODEL "tts-1"  // Options: "tts-1" (fast) or "tts-1-hd" (high quality)
 #define TTS_VOICE "alloy"  // Options: alloy, echo, fable, onyx, nova, shimmer
@@ -64,7 +65,7 @@
 #define SPK_SAMPLE_RATE 24000    // 24kHz for TTS output
 
 // Buffer Sizes
-#define INPUT_BUFFER_SIZE 32768      // 32KB for microphone capture
+#define INPUT_BUFFER_SIZE 131072     // 128KB for microphone capture (8 seconds at 16kHz)
 #define OUTPUT_BUFFER_SIZE 262144    // 256KB for TTS streaming
 #define DMA_BUFFER_COUNT 8
 #define DMA_BUFFER_SIZE 1024

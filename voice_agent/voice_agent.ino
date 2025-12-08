@@ -18,7 +18,8 @@
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 #include <time.h>
-#include <driver/i2s.h>
+#include <driver/i2s_std.h>
+#include <ArduinoJson.h>
 #include "Audio.h"
 #include "config.h"
 
@@ -55,15 +56,15 @@ int16_t* audioBuffer = nullptr;
 uint32_t bufferWritePos = 0;
 int32_t i2sSamples[SAMPLES_PER_READ];
 
-// Audio library
-Audio audio;
+// Audio library (using I2S_NUM_1 for speaker)
+Audio audio(I2S_NUM_1);
 
 // Button state
 unsigned long buttonPressTime = 0;
 bool buttonWasPressed = false;
 
 // I2S driver state
-bool micDriverInstalled = false;
+i2s_chan_handle_t i2s_mic_handle = nullptr;
 
 // Conversation memory
 String previousAssistantResponse = "";
@@ -97,9 +98,7 @@ void allocatePSRAMBuffers();
 
 // I2S lifecycle
 void initMicrophone();
-void deinitMicrophone();
 void initSpeaker();
-void deinitSpeaker();
 
 // State handlers
 void handleIdle();
@@ -141,12 +140,12 @@ void setup() {
 
   // Initialize button
   pinMode(BUTTON_PIN, INPUT_PULLUP);
-  Serial.println(" Button initialized (GPIO 10)");
+  Serial.println(" Button initialized (GPIO 10)");
 
   // Initialize speaker shutdown pin (start disabled)
   pinMode(I2S_SPK_SD_PIN, OUTPUT);
   digitalWrite(I2S_SPK_SD_PIN, LOW);
-  Serial.println(" Speaker amplifier initialized");
+  Serial.println(" Speaker amplifier initialized");
 
   // Connect to WiFi
   connectWiFi();
@@ -157,14 +156,15 @@ void setup() {
   // Allocate PSRAM buffers
   allocatePSRAMBuffers();
 
-  // Initialize microphone
-  initMicrophone();
+  // Initialize BOTH I2S devices permanently
+  initMicrophone();  // I2S_NUM_0
+  initSpeaker();     // I2S_NUM_1 (via Audio library)
 
   // Set initial state
   currentState = IDLE;
 
   Serial.println("\n=================================");
-  Serial.println(" Ready - Press button to speak");
+  Serial.println(" Ready - Press button to speak");
   Serial.println("=================================\n");
 }
 
@@ -219,11 +219,11 @@ void connectWiFi() {
   }
 
   if (WiFi.status() == WL_CONNECTED) {
-    Serial.println("\n WiFi connected");
+    Serial.println("\n WiFi connected");
     Serial.print("IP Address: ");
     Serial.println(WiFi.localIP());
   } else {
-    Serial.println("\n WiFi connection failed!");
+    Serial.println("\nWiFi connection failed!");
     Serial.println("Please check your credentials in config.h");
     while(1) delay(1000);
   }
@@ -243,11 +243,11 @@ void syncTime() {
   }
 
   if (getLocalTime(&timeinfo)) {
-    Serial.println("\n Time synced");
+    Serial.println("\n Time synced");
     Serial.print("Current time: ");
     Serial.println(&timeinfo, "%Y-%m-%d %H:%M:%S");
   } else {
-    Serial.println("\n Time sync failed!");
+    Serial.println("\nTime sync failed!");
     Serial.println("TTS may not work without proper time sync");
   }
 }
@@ -257,11 +257,11 @@ void allocatePSRAMBuffers() {
 
   audioBuffer = (int16_t*)ps_malloc(INPUT_BUFFER_SIZE);
   if (!audioBuffer) {
-    Serial.println(" Failed to allocate audio buffer");
+    Serial.println("Failed to allocate audio buffer");
     while(1) delay(1000);
   }
 
-  Serial.println(" PSRAM buffers allocated");
+  Serial.println("PSRAM buffers allocated");
   Serial.print("Free heap: ");
   Serial.println(ESP.getFreeHeap());
   Serial.print("Free PSRAM: ");
@@ -270,58 +270,54 @@ void allocatePSRAMBuffers() {
 
 // ===== I2S LIFECYCLE FUNCTIONS =====
 void initMicrophone() {
-  if (micDriverInstalled) return;
-
   Serial.println("Initializing microphone...");
 
-  i2s_config_t i2s_config = {
-    .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_RX),
-    .sample_rate = MIC_SAMPLE_RATE,
-    .bits_per_sample = I2S_BITS_PER_SAMPLE_32BIT,
-    .channel_format = I2S_CHANNEL_FMT_RIGHT_LEFT,
-    .communication_format = (i2s_comm_format_t)(I2S_COMM_FORMAT_STAND_I2S),
-    .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1,
-    .dma_buf_count = DMA_BUFFER_COUNT,
-    .dma_buf_len = DMA_BUFFER_SIZE,
-    .use_apll = false,
-    .tx_desc_auto_clear = false,
-    .fixed_mclk = 0
-  };
+  // Configure I2S channel for RX (microphone input)
+  i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
+  chan_cfg.dma_desc_num = DMA_BUFFER_COUNT;      // 8
+  chan_cfg.dma_frame_num = DMA_BUFFER_SIZE;      // 1024
+  chan_cfg.auto_clear = true;
 
-  i2s_pin_config_t pin_config = {
-    .bck_io_num = I2S_MIC_SCK_PIN,
-    .ws_io_num = I2S_MIC_WS_PIN,
-    .data_out_num = I2S_PIN_NO_CHANGE,
-    .data_in_num = I2S_MIC_SD_PIN
-  };
-
-  esp_err_t err = i2s_driver_install(I2S_PORT, &i2s_config, 0, NULL);
+  // Create RX channel only (NULL for TX)
+  esp_err_t err = i2s_new_channel(&chan_cfg, NULL, &i2s_mic_handle);
   if (err != ESP_OK) {
-    Serial.printf(" Failed to install I2S driver: %d\n", err);
+    Serial.printf("Failed to install I2S driver: %d\n", err);
     while (1) delay(1000);
   }
 
-  err = i2s_set_pin(I2S_PORT, &pin_config);
+  // Configure standard I2S mode (Philips format)
+  i2s_std_config_t std_cfg = {
+    .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(MIC_SAMPLE_RATE),
+    .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_32BIT, I2S_SLOT_MODE_STEREO),
+    .gpio_cfg = {
+      .mclk = I2S_GPIO_UNUSED,
+      .bclk = (gpio_num_t)I2S_MIC_SCK_PIN,
+      .ws = (gpio_num_t)I2S_MIC_WS_PIN,
+      .dout = I2S_GPIO_UNUSED,
+      .din = (gpio_num_t)I2S_MIC_SD_PIN,
+      .invert_flags = {
+        .mclk_inv = false,
+        .bclk_inv = false,
+        .ws_inv = false,
+      },
+    },
+  };
+
+  // Initialize standard mode
+  err = i2s_channel_init_std_mode(i2s_mic_handle, &std_cfg);
   if (err != ESP_OK) {
-    Serial.printf(" Failed to set I2S pins: %d\n", err);
+    Serial.printf("Failed to set I2S pins: %d\n", err);
     while (1) delay(1000);
   }
 
-  i2s_start(I2S_PORT);
+  // Enable channel
+  err = i2s_channel_enable(i2s_mic_handle);
+  if (err != ESP_OK) {
+    Serial.printf(" Failed to enable I2S channel: %d\n", err);
+    while (1) delay(1000);
+  }
 
-  micDriverInstalled = true;
-  Serial.println(" Microphone driver installed");
-}
-
-void deinitMicrophone() {
-  if (!micDriverInstalled) return;
-
-  i2s_stop(I2S_PORT);
-  i2s_driver_uninstall(I2S_PORT);
-  micDriverInstalled = false;
-
-  Serial.println(" Microphone driver uninstalled");
-  delay(100);
+  Serial.println(" Microphone driver installed");
 }
 
 void initSpeaker() {
@@ -331,19 +327,12 @@ void initSpeaker() {
   digitalWrite(I2S_SPK_SD_PIN, HIGH);
   delay(50);
 
-  // Audio library will claim I2S_NUM_0
+  // Configure Audio library to use I2S_NUM_1
+  // Note: Audio object was constructed with I2S_NUM_1 parameter
   audio.setPinout(I2S_SPK_BCLK_PIN, I2S_SPK_LRC_PIN, I2S_SPK_DIN_PIN);
   audio.setVolume(15);  // 0-21, 15 = ~70%
 
-  Serial.println(" Speaker initialized");
-}
-
-void deinitSpeaker() {
-  // Disable amplifier
-  digitalWrite(I2S_SPK_SD_PIN, LOW);
-  delay(100);
-
-  Serial.println(" Speaker disabled");
+  Serial.println(" Speaker initialized on I2S_NUM_1");
 }
 
 // ===== STATE HANDLERS =====
@@ -400,19 +389,12 @@ void handleRecording() {
 void handleError() {
   if (millis() - errorStartTime > 3000) {
     // Recovery after 3 seconds
-    Serial.println("{ Recovering...");
+    Serial.println("Recovering...");
 
     currentError = ERROR_NONE;
-
-    // Ensure mic driver is active
-    if (!micDriverInstalled) {
-      deinitSpeaker();
-      delay(200);
-      initMicrophone();
-    }
-
     currentState = IDLE;
-    Serial.println("\n Recovered - Ready - Press button to speak\n");
+
+    Serial.println("\nRecovered - Ready - Press button to speak\n");
   }
 }
 
@@ -422,18 +404,35 @@ void startRecording() {
   memset(audioBuffer, 0, INPUT_BUFFER_SIZE);
 
   // Clear I2S buffer of stale data
-  size_t bytes_read;
-  i2s_read(I2S_PORT, i2sSamples, sizeof(i2sSamples), &bytes_read, 0);
+  size_t bytes_read_dummy;
+  i2s_channel_read(i2s_mic_handle, i2sSamples, sizeof(i2sSamples), &bytes_read_dummy, 0);
 
   currentState = RECORDING;
-  Serial.println("\n<� Recording... (release button when done)");
+  Serial.println("\nRecording... (release button when done)");
+
+  // === DIAGNOSTIC: Display raw audio samples ===
+  size_t bytes_read = 0;
+  i2s_channel_read(i2s_mic_handle, i2sSamples, sizeof(i2sSamples), &bytes_read, 100);
+
+  Serial.println("\n=== AUDIO DIAGNOSTIC ===");
+  Serial.printf("Bytes read: %d samples\n", bytes_read / 4);
+  Serial.println("First 10 raw I2S samples:");
+  for (int i = 0; i < 10; i++) {
+    Serial.printf("[%d] Raw=0x%08X  >>8=%d  >>14=%d  >>16=%d\n",
+                  i,
+                  i2sSamples[i],
+                  i2sSamples[i] >> 8,
+                  i2sSamples[i] >> 14,
+                  i2sSamples[i] >> 16);
+  }
+  Serial.println("========================\n");
 }
 
 void captureAudioChunk() {
   size_t bytes_read = 0;
 
-  esp_err_t result = i2s_read(
-    I2S_PORT,
+  esp_err_t result = i2s_channel_read(
+    i2s_mic_handle,
     i2sSamples,
     sizeof(i2sSamples),
     &bytes_read,
@@ -442,14 +441,44 @@ void captureAudioChunk() {
 
   if (result != ESP_OK || bytes_read == 0) return;
 
+  // In STEREO mode: LEFT sample, then RIGHT sample alternating
+  // INMP441 L/R=GND means LEFT channel has data, RIGHT is noise/duplicate
   int samples_count = bytes_read / sizeof(int32_t);
   uint32_t maxSamples = INPUT_BUFFER_SIZE / sizeof(int16_t);
 
-  for (int i = 0; i < samples_count && bufferWritePos < maxSamples; i++) {
-    // CRITICAL: INMP441 outputs 24-bit in 32-bit frames
-    // Shift right by 16 to get 16-bit sample
+  // STEREO mode: Skip zeros (even samples), use only odd samples where INMP441 data is
+  for (int i = 1; i < samples_count && bufferWritePos < maxSamples; i += 2) {
+    // Based on diagnostics: odd samples have audio data, even samples are zeros
+    // INMP441 outputs 24-bit in 32-bit frames
+    // Need to shift by 16 total to properly convert 24-bit to 16-bit without overflow
     int16_t sample16 = (int16_t)(i2sSamples[i] >> 16);
     audioBuffer[bufferWritePos++] = sample16;
+  }
+
+  // === DIAGNOSTIC: Audio level monitoring ===
+  static unsigned long lastMonitor = 0;
+  if (millis() - lastMonitor >= 200 && bufferWritePos > 320) {
+    lastMonitor = millis();
+
+    // Calculate RMS and peak of last 160 samples (10ms at 16kHz)
+    int64_t sum_squares = 0;
+    int32_t peak = 0;
+    for (int j = 0; j < 160; j++) {
+      int16_t sample = audioBuffer[bufferWritePos - 1 - j];
+      int32_t abs_val = abs(sample);
+      if (abs_val > peak) peak = abs_val;
+      sum_squares += (int64_t)sample * (int64_t)sample;
+    }
+    float rms = sqrt((float)sum_squares / 160.0);
+
+    // Display audio level meter
+    int bars = (int)(rms / 100.0);  // Scale for visibility
+    if (bars > 40) bars = 40;
+    Serial.print("Audio [");
+    for (int b = 0; b < 40; b++) {
+      Serial.print(b < bars ? "=" : " ");
+    }
+    Serial.printf("] RMS=%.0f Peak=%d\n", rms, peak);
   }
 }
 
@@ -457,7 +486,7 @@ void stopRecording() {
   uint32_t samplesRecorded = bufferWritePos;
   float durationSeconds = (float)samplesRecorded / MIC_SAMPLE_RATE;
 
-  Serial.print(" Recorded ");
+  Serial.print(" Recorded ");
   Serial.print(samplesRecorded);
   Serial.print(" samples (");
   Serial.print(durationSeconds, 2);
@@ -494,15 +523,35 @@ void processAudio() {
 // ===== API FUNCTIONS =====
 String transcribeAudio(int16_t* samples, uint32_t sampleCount) {
   currentState = PROCESSING_WHISPER;
-  Serial.println("= Transcribing audio...");
+  Serial.println("Transcribing audio...");
+
+  // Validate input
+  if (sampleCount == 0) {
+    Serial.println("Error: No audio samples to transcribe");
+    return "";
+  }
+
+  if (sampleCount > (INPUT_BUFFER_SIZE / sizeof(int16_t))) {
+    Serial.println("Error: Sample count exceeds buffer size");
+    return "";
+  }
+
+  Serial.printf("Audio: %lu samples (%.2f seconds)\n",
+                sampleCount,
+                (float)sampleCount / MIC_SAMPLE_RATE);
 
   WiFiClientSecure client;
   client.setInsecure();
+  client.setTimeout(API_TIMEOUT_MS / 1000);  // Convert ms to seconds
 
+  Serial.print("Connecting to api.openai.com:443...");
   if (!client.connect("api.openai.com", 443)) {
-    Serial.println(" Connection failed");
+    Serial.println(" FAILED");
+    Serial.printf("WiFi status: %d\n", WiFi.status());
+    Serial.printf("Free heap: %d bytes\n", ESP.getFreeHeap());
     return "";
   }
+  Serial.println(" Connected");
 
   // Generate WAV header
   WAVHeader header = createWAVHeader(sampleCount);
@@ -519,6 +568,9 @@ String transcribeAudio(int16_t* samples, uint32_t sampleCount) {
   String bodyMiddle = "\r\n--" + boundary + "\r\n";
   bodyMiddle += "Content-Disposition: form-data; name=\"model\"\r\n\r\n";
   bodyMiddle += WHISPER_MODEL;
+  bodyMiddle += "\r\n--" + boundary + "\r\n";
+  bodyMiddle += "Content-Disposition: form-data; name=\"language\"\r\n\r\n";
+  bodyMiddle += WHISPER_LANGUAGE;
   bodyMiddle += "\r\n--" + boundary + "--\r\n";
 
   uint32_t contentLength = bodyStart.length() + totalWAVSize + bodyMiddle.length();
@@ -548,17 +600,42 @@ String transcribeAudio(int16_t* samples, uint32_t sampleCount) {
   const uint32_t CHUNK_SIZE = 2048;
 
   while (bytesSent < bytesToSend) {
+    // Check if connection is still active
+    if (!client.connected()) {
+      Serial.println("Connection lost during upload!");
+      return "";
+    }
+
     uint32_t chunkSize = min(CHUNK_SIZE, bytesToSend - bytesSent);
-    client.write((uint8_t*)samples + bytesSent, chunkSize);
-    bytesSent += chunkSize;
+    size_t written = client.write((uint8_t*)samples + bytesSent, chunkSize);
+
+    if (written == 0) {
+      Serial.println("Failed to write data!");
+      return "";
+    }
+
+    bytesSent += written;
+
+    // Progress update every 8KB
+    if (bytesSent % 8192 == 0 || bytesSent == bytesToSend) {
+      Serial.printf("Uploaded %lu/%lu bytes (%.0f%%)\n",
+                    bytesSent, bytesToSend,
+                    (float)bytesSent * 100.0 / bytesToSend);
+    }
   }
 
   // Send body end
   client.print(bodyMiddle);
+  Serial.println("Request sent, waiting for response...");
 
   // Read response
   String response = readHTTPResponse(client);
   client.stop();
+
+  if (response.length() == 0) {
+    Serial.println("Empty response from server");
+    return "";
+  }
 
   // Parse JSON response
   return parseWhisperResponse(response);
@@ -566,15 +643,19 @@ String transcribeAudio(int16_t* samples, uint32_t sampleCount) {
 
 String getChatResponse(String userMessage) {
   currentState = PROCESSING_CHAT;
-  Serial.println("> Getting AI response...");
+  Serial.println("Getting AI response...");
 
   WiFiClientSecure client;
   client.setInsecure();
+  client.setTimeout(API_TIMEOUT_MS / 1000);  // Convert ms to seconds
 
+  Serial.print("Connecting to api.openai.com:443...");
   if (!client.connect("api.openai.com", 443)) {
-    Serial.println(" Connection failed");
+    Serial.println(" FAILED");
+    Serial.printf("WiFi status: %d\n", WiFi.status());
     return "";
   }
+  Serial.println(" Connected");
 
   // Build JSON payload with conversation context
   String payload = "{";
@@ -629,14 +710,7 @@ String getChatResponse(String userMessage) {
 }
 
 void speakResponse(String text) {
-  // Prepare for speaker (uninstall mic driver)
-  Serial.println("=
- Preparing to speak...");
-
-  deinitMicrophone();
-  delay(200);  // CRITICAL: Let hardware settle
-
-  initSpeaker();
+  Serial.println("Preparing to speak...");
 
   currentState = SPEAKING;
   Serial.print("Speaking: ");
@@ -654,13 +728,8 @@ void speakResponse(String text) {
   );
 
   if (!success) {
-    Serial.println(" TTS request failed!");
+    Serial.println("TTS request failed!");
     setError(ERROR_TTS_FAILED, "TTS failed");
-
-    // Recovery: reinstall mic driver
-    deinitSpeaker();
-    delay(200);
-    initMicrophone();
     return;
   }
 
@@ -676,33 +745,36 @@ WAVHeader createWAVHeader(uint32_t sampleCount) {
 }
 
 String parseWhisperResponse(String response) {
-  // Find JSON body (after headers)
+  // Find JSON body (after HTTP headers)
   int bodyStart = response.indexOf("\r\n\r\n");
   if (bodyStart == -1) {
-    Serial.println(" Invalid response format");
+    Serial.println("Invalid response format");
     return "";
   }
 
   String jsonBody = response.substring(bodyStart + 4);
 
-  // Simple JSON parsing for "text" field
-  int textStart = jsonBody.indexOf("\"text\"");
-  if (textStart == -1) {
-    Serial.println(" No text field in response");
+  // Parse JSON with ArduinoJson
+  StaticJsonDocument<512> doc;
+  DeserializationError error = deserializeJson(doc, jsonBody);
+
+  if (error) {
+    Serial.print("JSON parse failed: ");
+    Serial.println(error.c_str());
+    Serial.println("Response body:");
+    Serial.println(jsonBody.substring(0, 200));
     return "";
   }
 
-  int quoteStart = jsonBody.indexOf("\"", textStart + 7);
-  int quoteEnd = jsonBody.indexOf("\"", quoteStart + 1);
-
-  if (quoteStart == -1 || quoteEnd == -1) {
-    Serial.println(" Failed to parse text field");
+  // Extract text field
+  if (!doc.containsKey("text")) {
+    Serial.println("No text field in response");
     return "";
   }
 
-  String transcription = jsonBody.substring(quoteStart + 1, quoteEnd);
+  String transcription = doc["text"].as<String>();
 
-  Serial.print("=� Transcription: \"");
+  Serial.print("Transcription: \"");
   Serial.print(transcription);
   Serial.println("\"");
 
@@ -710,45 +782,42 @@ String parseWhisperResponse(String response) {
 }
 
 String parseChatResponse(String response) {
+  // Find JSON body (after HTTP headers)
   int bodyStart = response.indexOf("\r\n\r\n");
   if (bodyStart == -1) {
-    Serial.println(" Invalid response format");
+    Serial.println("Invalid response format");
     return "";
   }
 
   String jsonBody = response.substring(bodyStart + 4);
 
-  // Find content field in choices[0].message.content
-  int contentStart = jsonBody.indexOf("\"content\"");
-  if (contentStart == -1) {
-    Serial.println(" No content field in response");
+  // Parse JSON with ArduinoJson
+  StaticJsonDocument<1024> doc;
+  DeserializationError error = deserializeJson(doc, jsonBody);
+
+  if (error) {
+    Serial.print("JSON parse failed: ");
+    Serial.println(error.c_str());
+    Serial.println("Response body:");
+    Serial.println(jsonBody.substring(0, 200));
     return "";
   }
 
-  int quoteStart = jsonBody.indexOf("\"", contentStart + 10);
-  int quoteEnd = -1;
-
-  // Find matching quote (handle escaped quotes)
-  for (int i = quoteStart + 1; i < jsonBody.length(); i++) {
-    if (jsonBody[i] == '\"' && jsonBody[i-1] != '\\') {
-      quoteEnd = i;
-      break;
-    }
-  }
-
-  if (quoteStart == -1 || quoteEnd == -1) {
-    Serial.println(" Failed to parse content field");
+  // Navigate JSON path: choices[0].message.content
+  if (!doc.containsKey("choices") || doc["choices"].size() == 0) {
+    Serial.println("No choices in response");
     return "";
   }
 
-  String content = jsonBody.substring(quoteStart + 1, quoteEnd);
+  JsonObject choice = doc["choices"][0];
+  if (!choice.containsKey("message") || !choice["message"].containsKey("content")) {
+    Serial.println("No content field in response");
+    return "";
+  }
 
-  // Unescape JSON
-  content.replace("\\n", " ");
-  content.replace("\\\"", "\"");
-  content.replace("\\\\", "\\");
+  String content = choice["message"]["content"].as<String>();
 
-  Serial.print("=� AI: \"");
+  Serial.print("AI: \"");
   Serial.print(content);
   Serial.println("\"");
 
@@ -758,12 +827,22 @@ String parseChatResponse(String response) {
 // ===== NETWORK FUNCTIONS =====
 String readHTTPResponse(WiFiClientSecure& client) {
   unsigned long timeout = millis() + API_TIMEOUT_MS;
+  unsigned long startTime = millis();
   String response = "";
+  int bytesReceived = 0;
+
+  Serial.print("Reading response");
 
   while (client.connected() && millis() < timeout) {
     if (client.available()) {
       char c = client.read();
       response += c;
+      bytesReceived++;
+
+      // Print progress every 1000 bytes
+      if (bytesReceived % 1000 == 0) {
+        Serial.print(".");
+      }
     }
 
     // Check if we've received enough data (simple heuristic)
@@ -772,6 +851,7 @@ String readHTTPResponse(WiFiClientSecure& client) {
       delay(100);
       while (client.available()) {
         response += (char)client.read();
+        bytesReceived++;
       }
       break;
     }
@@ -779,18 +859,23 @@ String readHTTPResponse(WiFiClientSecure& client) {
     delay(1);
   }
 
+  Serial.println();
+  Serial.printf("Received %d bytes in %lu ms\n", bytesReceived, millis() - startTime);
+
   if (millis() >= timeout) {
-    Serial.println("� API timeout");
+    Serial.println("API timeout - no response received");
+    Serial.printf("Connection still active: %d\n", client.connected());
     return "";
   }
 
   // Check HTTP status code
   if (response.indexOf("HTTP/1.1 200") == -1) {
-    Serial.println("� Non-200 response:");
-    Serial.println(response.substring(0, 300));
+    Serial.println("Non-200 response:");
+    Serial.println(response.substring(0, 500));
     return "";
   }
 
+  Serial.println("HTTP 200 OK received");
   return response;
 }
 
@@ -815,18 +900,10 @@ void setError(ErrorType error, const char* message) {
 }
 
 void onSpeakingComplete() {
-  Serial.println(" Audio playback finished");
-
-  // Cleanup speaker and restore microphone
-  deinitSpeaker();
-  delay(200);  // CRITICAL: Let hardware settle
-
-  initMicrophone();
+  Serial.println("Audio playback finished");
 
   currentState = IDLE;
-  Serial.println("\n=================================");
-  Serial.println("Ready - Press button to speak");
-  Serial.println("=================================\n");
+  Serial.println("\nReady - Press button to speak\n");
 }
 
 // ===== OPTIONAL AUDIO LIBRARY CALLBACKS =====
