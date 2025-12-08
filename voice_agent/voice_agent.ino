@@ -330,7 +330,7 @@ void initSpeaker() {
   // Configure Audio library to use I2S_NUM_1
   // Note: Audio object was constructed with I2S_NUM_1 parameter
   audio.setPinout(I2S_SPK_BCLK_PIN, I2S_SPK_LRC_PIN, I2S_SPK_DIN_PIN);
-  audio.setVolume(15);  // 0-21, 15 = ~70%
+  audio.setVolume(PLAYBACK_VOLUME);  // 0-21, 15 = ~70%
 
   Serial.println(" Speaker initialized on I2S_NUM_1");
 }

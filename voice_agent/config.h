@@ -74,6 +74,9 @@
 #define MAX_RECORDING_TIME_MS 10000  // 10 seconds maximum
 #define MIN_RECORDING_TIME_MS 500    // 0.5 seconds minimum
 
+
+// Volume for playback
+#define PLAYBACK_VOLUME 10 //0-21, 15 = ~70% 
 // =====================================
 // System Configuration
 // =====================================
