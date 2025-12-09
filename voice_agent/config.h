@@ -76,7 +76,7 @@
 
 
 // Volume for playback
-#define PLAYBACK_VOLUME 10 //0-21, 15 = ~70% 
+#define PLAYBACK_VOLUME 15 //0-21, 15 = ~70% 
 // =====================================
 // System Configuration
 // =====================================
