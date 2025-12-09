@@ -33,7 +33,7 @@ The project is configured for the ESP32-S3 using the following pins defined in `
 | **SCK** | GPIO 18 | Serial Clock |
 | **VDD** | 3.3V | |
 | **GND** | GND | |
-| **L/R** | GND | 3.3V |
+| **L/R** | 3.3V |  |
 
 ### Amplifier (MAX98357A) - I2S Port 1
 | Pin Name | ESP32 Pin | Note |
