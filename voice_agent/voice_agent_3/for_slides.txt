@@ -1,2 +1,4 @@
 for slides:
 1. ps_malloc
+2. old vs new i2s driver + neo pixel vs fastLED
+3. this is a lot of code, if you are using chat for this. make sure to include all the code. 
