@@ -1,18 +1,26 @@
+//TODO: move to responses API and save last respose
 //TODO: Add LED status
 //TODO: start with sofAP
-//TODO: move to responses API and save last respose
 //TODO: create a configuration screen for system prompt + show last 3 messages
-
 /*
   Voice Assistant (ESP32-S3)
   -------------------------
+
+  REQUIRED LIBRARIES
+  ------------------
+  This sketch requires ArduinoJson.
+  Install via Arduino IDE:
+    Sketch -> Include Library -> Manage Libraries...
+    Search for "ArduinoJson" by Benoit Blanchon
+    Install version 6.x or newer
+
   Pipeline:
     1) Long-press button to trigger recording
     2) Record audio from INMP441 over I2S (RX)
-    3) Send WAV to OpenAI transcription (STT)
-    4) Send transcript to OpenAI chat completion (HTTPClient POST)
-    5) Send answer to OpenAI TTS, download full WAV, buffer audio in PSRAM,
-       then play buffered audio to MAX98357A over I2S (TX)
+    3) Send WAV to OpenAI transcription (STT), response_format = text
+    4) Send transcript to OpenAI chat completion (HTTPClient POST + ArduinoJson)
+    5) Send answer to OpenAI TTS (response_format = pcm),
+       download into fixed PSRAM buffer, then play over I2S (TX)
 
   Pin configuration
   -----------------
@@ -37,23 +45,25 @@
   Button
     - + -> GPIO 1
     - - -> GND
+
+  Status LED
+    - GPIO 39
 */
 
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
 #include <time.h>
+#include <ArduinoJson.h>
 
 #include "config.h"
-
 #include "esp32-hal-psram.h"
-#include "driver/i2s.h"  // Legacy I2S for speaker (MAX98357A)
+#include "driver/i2s.h"
 
 // ------------------------------
 // SERIAL OUTPUT CONTROL
 // ------------------------------
 #define SERIAL_ON true
-
 #define PRINT(x)       do { if (SERIAL_ON) Serial.print(x); } while (0)
 #define PRINTLN(x)     do { if (SERIAL_ON) Serial.println(x); } while (0)
 #define PRINTF(...)    do { if (SERIAL_ON) Serial.printf(__VA_ARGS__); } while (0)
@@ -93,9 +103,8 @@ static const gpio_num_t I2S_SD_IN  = GPIO_NUM_40;  // DOUT from mic
 // ------------------------------
 // AUDIO SETTINGS (SPEAKER / TTS)
 // ------------------------------
-// We keep the speaker configured for 24 kHz, 16-bit mono.
-// The TTS server may return WAV with a header describing the real rate;
-// we strip the header and play the raw PCM payload as-is.
+// Playback configuration for PCM output.
+// We assume the returned PCM is 16-bit mono little-endian.
 #define SAMPLE_RATE_OUT 24000
 
 // MAX98357A I2S TX pins
@@ -106,33 +115,73 @@ static const gpio_num_t I2S_DOUT_OUT = GPIO_NUM_17;
 // ------------------------------
 // TTS FULL-BUFFER SETTINGS (PSRAM)
 // ------------------------------
-// Max buffered TTS duration (seconds). PCM mono 16-bit at 24kHz is 48,000 bytes/sec.
 #define MAX_TTS_SECONDS 15
-#define TTS_BYTES_PER_SEC (SAMPLE_RATE_OUT * 2)  // 16-bit mono -> 2 bytes/sample
+#define TTS_BYTES_PER_SEC (SAMPLE_RATE_OUT * 2)   // 16-bit mono = 2 bytes/sample
 #define MAX_TTS_BYTES (MAX_TTS_SECONDS * TTS_BYTES_PER_SEC)
 
-// PSRAM buffer for downloaded TTS PCM payload (WAV header stripped)
 uint8_t* tts_pcm_buf = nullptr;
 size_t   tts_pcm_len = 0;
 
 // ------------------------------
-// I2S CHANNEL HANDLES (unused here, kept as-is)
-// ------------------------------
-i2s_chan_handle_t rx_chan = nullptr;
-i2s_chan_handle_t tx_chan = nullptr;
-
-// ------------------------------
 // GLOBAL AUDIO BUFFERS (PSRAM)
 // ------------------------------
-// raw_buf: stores 32-bit I2S mic frames
-// pcm_buf: stores converted 16-bit PCM samples for WAV upload
-int32_t* raw_buf = nullptr;
-int16_t* pcm_buf = nullptr;
+int32_t* raw_buf = nullptr;  // 32-bit I2S mic frames
+int16_t* pcm_buf = nullptr;  // 16-bit PCM samples for WAV upload
 
-// Small helper: inline NOP for "short press"
+// ------------------------------
+// Small helper: inline NOP for short press
+// ------------------------------
 static inline void do_nop() {
-  __asm__ __volatile__("nop" ::
-                         : "memory");
+  __asm__ __volatile__("nop" ::: "memory");
+}
+
+// =====================================================================
+// Helper: JSON escape for TTS "input" (kept small and deterministic)
+// =====================================================================
+String jsonEscape(const String& s) {
+  String out = "\"";
+  for (size_t i = 0; i < s.length(); ++i) {
+    char c = s[i];
+    switch (c) {
+      case '\"': out += "\\\""; break;
+      case '\\': out += "\\\\"; break;
+      case '\b': out += "\\b"; break;
+      case '\f': out += "\\f"; break;
+      case '\n': out += "\\n"; break;
+      case '\r': out += "\\r"; break;
+      case '\t': out += "\\t"; break;
+      default:
+        if ((uint8_t)c < 0x20) {
+          char buf[7];
+          sprintf(buf, "\\u%04x", (uint8_t)c);
+          out += buf;
+        } else {
+          out += c;
+        }
+    }
+  }
+  out += "\"";
+  return out;
+}
+
+// =====================================================================
+// Helper: Parse and print OpenAI-style JSON error body if present
+// =====================================================================
+void print_openai_json_error_if_any(const String& body, const char* tag) {
+  StaticJsonDocument<1024> doc;
+  DeserializationError err = deserializeJson(doc, body);
+  if (err) {
+    PRINTF("%s: non-JSON error body (or parse failed)\n", tag);
+    return;
+  }
+
+  const char* msg  = doc["error"]["message"] | "";
+  const char* type = doc["error"]["type"] | "";
+  const char* code = doc["error"]["code"] | "";
+
+  PRINTF("%s: error.message: %s\n", tag, msg);
+  if (type[0]) PRINTF("%s: error.type: %s\n", tag, type);
+  if (code[0]) PRINTF("%s: error.code: %s\n", tag, code);
 }
 
 // =====================================================================
@@ -164,11 +213,11 @@ void init_i2s_speaker_legacy(uint32_t sampleRate) {
   i2s_set_pin(I2S_NUM_1, &pins);
   i2s_zero_dma_buffer(I2S_NUM_1);
 
-  PRINTF("I2S speaker (legacy) ready @ %u Hz\n", (unsigned)sampleRate);
+  PRINTF("I2S speaker ready @ %u Hz\n", (unsigned)sampleRate);
 }
 
 // =====================================================================
-// WAV HEADER (16-bit mono helpers)
+// WAV HEADER (16-bit mono helpers) for STT upload
 // =====================================================================
 void write_u32_le(uint8_t* buf, uint32_t v) {
   buf[0] = v & 0xff;
@@ -211,8 +260,7 @@ void setup_i2s_mic() {
     .sample_rate = SAMPLE_RATE_IN,
     .bits_per_sample = I2S_BITS_PER_SAMPLE_32BIT,
     .channel_format = I2S_CHANNEL_FMT_ONLY_LEFT,
-    .communication_format =
-      (i2s_comm_format_t)(I2S_COMM_FORMAT_I2S | I2S_COMM_FORMAT_I2S_MSB),
+    .communication_format = (i2s_comm_format_t)(I2S_COMM_FORMAT_I2S | I2S_COMM_FORMAT_I2S_MSB),
     .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1,
     .dma_buf_count = 6,
     .dma_buf_len = 256,
@@ -228,9 +276,7 @@ void setup_i2s_mic() {
     .data_in_num = I2S_SD_IN
   };
 
-  esp_err_t err;
-
-  err = i2s_driver_install(I2S_NUM_0, &config, 0, NULL);
+  esp_err_t err = i2s_driver_install(I2S_NUM_0, &config, 0, NULL);
   if (err != ESP_OK) {
     PRINTF("I2S mic: driver_install failed: %d\n", err);
     return;
@@ -243,7 +289,6 @@ void setup_i2s_mic() {
   }
 
   i2s_zero_dma_buffer(I2S_NUM_0);
-
   PRINTLN("I2S microphone ready (legacy, INMP441).");
 }
 
@@ -264,20 +309,16 @@ void record_audio() {
 
   while (samples_collected < NUM_SAMPLES) {
     int samples_to_read = NUM_SAMPLES - samples_collected;
-    if (samples_to_read > I2S_CHUNK_SAMPLES) {
-      samples_to_read = I2S_CHUNK_SAMPLES;
-    }
+    if (samples_to_read > I2S_CHUNK_SAMPLES) samples_to_read = I2S_CHUNK_SAMPLES;
 
     size_t bytes_to_read = (size_t)samples_to_read * sizeof(int32_t);
     size_t bytes_read = 0;
 
-    esp_err_t err = i2s_read(
-      I2S_NUM_0,
-      &raw_buf[samples_collected],
-      bytes_to_read,
-      &bytes_read,
-      portMAX_DELAY
-    );
+    esp_err_t err = i2s_read(I2S_NUM_0,
+                             &raw_buf[samples_collected],
+                             bytes_to_read,
+                             &bytes_read,
+                             portMAX_DELAY);
 
     if (err != ESP_OK) {
       PRINT("I2S read error: ");
@@ -287,7 +328,6 @@ void record_audio() {
 
     int got_samples = (int)(bytes_read / sizeof(int32_t));
     samples_collected += got_samples;
-
     yield();
   }
 
@@ -296,18 +336,17 @@ void record_audio() {
 
   if (samples_collected < NUM_SAMPLES) {
     PRINTLN("Warning: not all samples collected, filling rest with zeros.");
-    for (int i = samples_collected; i < NUM_SAMPLES; i++) {
-      raw_buf[i] = 0;
-    }
+    for (int i = samples_collected; i < NUM_SAMPLES; i++) raw_buf[i] = 0;
   }
 
+  // Convert 32-bit mic frames to 16-bit PCM (simple shift)
   for (int i = 0; i < NUM_SAMPLES; i++) {
     pcm_buf[i] = (int16_t)(raw_buf[i] >> 16);
   }
 }
 
 // =====================================================================
-// DIRECT HTTPS: STT -> returns transcribed question (raw WiFiClientSecure)
+// STT: Upload WAV; request response_format=text; return plain transcript
 // =====================================================================
 String openai_transcribe() {
   WiFiClientSecure client;
@@ -321,25 +360,38 @@ String openai_transcribe() {
   PRINTLN("STT: Connected to OpenAI.");
 
   String boundary = "----ESP32BOUNDARY";
-  String part_header =
+
+  String part_file_header =
     "--" + boundary + "\r\n"
     "Content-Disposition: form-data; name=\"file\"; filename=\"audio.wav\"\r\n"
     "Content-Type: audio/wav\r\n\r\n";
 
-  String part_footer =
+  String part_model =
     "\r\n--" + boundary + "\r\n"
     "Content-Disposition: form-data; name=\"model\"\r\n\r\n"
-    "gpt-4o-mini-transcribe\r\n"
+    "gpt-4o-mini-transcribe\r\n";
+
+  String part_respfmt =
+    "--" + boundary + "\r\n"
+    "Content-Disposition: form-data; name=\"response_format\"\r\n\r\n"
+    "text\r\n";
+
+  String part_end =
     "--" + boundary + "--\r\n";
 
   uint8_t wav_header[44];
   create_wav_header(wav_header, (uint32_t)(NUM_SAMPLES * 2), SAMPLE_RATE_IN);
 
-  int wav_header_size = 44;
-  int pcm_size = NUM_SAMPLES * 2;
+  const int wav_header_size = 44;
+  const int pcm_size = NUM_SAMPLES * 2;
 
   int content_len =
-    (int)part_header.length() + wav_header_size + pcm_size + (int)part_footer.length();
+    (int)part_file_header.length() +
+    wav_header_size +
+    pcm_size +
+    (int)part_model.length() +
+    (int)part_respfmt.length() +
+    (int)part_end.length();
 
   client.print("POST /v1/audio/transcriptions HTTP/1.1\r\n");
   client.print("Host: api.openai.com\r\n");
@@ -348,7 +400,7 @@ String openai_transcribe() {
   client.print("Content-Length: " + String(content_len) + "\r\n");
   client.print("Connection: close\r\n\r\n");
 
-  client.write((const uint8_t*)part_header.c_str(), part_header.length());
+  client.write((const uint8_t*)part_file_header.c_str(), part_file_header.length());
   client.write(wav_header, wav_header_size);
 
   const uint8_t* p = (const uint8_t*)pcm_buf;
@@ -360,148 +412,132 @@ String openai_transcribe() {
     remaining -= chunk;
   }
 
-  client.write((const uint8_t*)part_footer.c_str(), part_footer.length());
+  client.write((const uint8_t*)part_model.c_str(), part_model.length());
+  client.write((const uint8_t*)part_respfmt.c_str(), part_respfmt.length());
+  client.write((const uint8_t*)part_end.c_str(), part_end.length());
 
   PRINTLN("STT: Sent. Reading reply...");
 
-  String reply;
-  while (client.connected() || client.available()) {
-    if (client.available()) reply += (char)client.read();
+  // Read status line
+  String statusLine;
+  while (client.connected()) {
+    statusLine = client.readStringUntil('\n');
+    statusLine.trim();
+    if (statusLine.length() == 0) continue;
+    if (statusLine.startsWith("HTTP/")) break;
+  }
+  PRINT("STT: Status: ");
+  PRINTLN(statusLine);
+
+  int httpStatus = -1;
+  int sp1 = statusLine.indexOf(' ');
+  if (sp1 >= 0) {
+    int sp2 = statusLine.indexOf(' ', sp1 + 1);
+    if (sp2 >= 0) httpStatus = statusLine.substring(sp1 + 1, sp2).toInt();
+    else          httpStatus = statusLine.substring(sp1 + 1).toInt();
   }
 
-  PRINTLN("=== RAW STT REPLY ===");
-  PRINTLN(reply);
+  // Read headers (discard)
+  while (client.connected()) {
+    String line = client.readStringUntil('\n');
+    if (line == "\r" || line == "") break;
+  }
 
-  int idx = reply.indexOf("\"text\"");
-  if (idx == -1) {
-    PRINTLN("STT: No 'text' field found");
+  // Read body (text transcript on success; JSON on error sometimes)
+  String body;
+  while (client.connected() || client.available()) {
+    while (client.available()) body += (char)client.read();
+    delay(1);
+  }
+
+  if (httpStatus != 200) {
+    PRINTF("STT: Non-200 (%d)\n", httpStatus);
+    print_openai_json_error_if_any(body, "STT");
+    PRINTLN("STT raw body:");
+    PRINTLN(body);
     return "";
   }
 
-  int start = reply.indexOf(":", idx);
-  if (start < 0) return "";
-  start++;
-  while (start < reply.length() && (reply[start] == ' ' || reply[start] == '\"')) start++;
-  int end = reply.indexOf("\"", start);
-  if (end < 0) end = reply.length();
-
-  String question = reply.substring(start, end);
+  body.trim();
   PRINT("Transcription: ");
-  PRINTLN(question);
-  return question;
+  PRINTLN(body);
+  return body;
 }
 
 // =====================================================================
-// DIRECT HTTPS: Chat completion -> short spoken-style answer (HTTPClient POST)
+// Chat completion -> short spoken-style answer (HTTPClient + ArduinoJson)
 // =====================================================================
 String openai_answer(const String& question) {
-  PRINTLN("Chat: Using HTTPClient POST...");
+  PRINTLN("Chat: POST /v1/chat/completions");
 
   WiFiClientSecure client;
   client.setInsecure();
 
   HTTPClient http;
 
-  // Build JSON request body (same behavior as before)
-  String body = "{";
-  body += "\"model\":\"gpt-4o-mini\",";
-  body += "\"messages\":[";
-  body += "{\"role\":\"system\",\"content\":\"You are a helpful assistant. Answer in at most 2 short sentences suitable to be spoken aloud.\"},";
-  body += "{\"role\":\"user\",\"content\":\"";
+  // Build request JSON with ArduinoJson
+  StaticJsonDocument<768> req;
+  req["model"] = "gpt-4o-mini";
 
-  // Escape quotes/backslashes in question (minimal)
-  for (size_t i = 0; i < question.length(); i++) {
-    char c = question[i];
-    if (c == '\"' || c == '\\') body += '\\';
-    body += c;
-  }
+  JsonArray messages = req.createNestedArray("messages");
 
-  body += "\"}";
-  body += "]";
-  body += "}";
+  JsonObject sys = messages.createNestedObject();
+  sys["role"] = "system";
+  sys["content"] = "You are a helpful assistant. Answer in at most 2 short sentences suitable to be spoken aloud.";
 
-  // Start HTTPS request
+  JsonObject usr = messages.createNestedObject();
+  usr["role"] = "user";
+  usr["content"] = question;
+
+  String body;
+  serializeJson(req, body);
+
   if (!http.begin(client, "https://api.openai.com/v1/chat/completions")) {
     PRINTLN("Chat: http.begin failed");
     http.end();
     return "";
   }
 
+  http.setTimeout(15000);
   http.addHeader("Content-Type", "application/json");
   http.addHeader("Authorization", "Bearer " + String(OPENAI_API_KEY));
 
   int httpCode = http.POST((uint8_t*)body.c_str(), body.length());
-  PRINTF("Chat: HTTP status = %d\n", httpCode);
-
   String reply = http.getString();
   http.end();
 
+  PRINTF("Chat: HTTP status = %d\n", httpCode);
   PRINTLN("=== RAW CHAT REPLY ===");
   PRINTLN(reply);
 
   if (httpCode != 200) {
-    PRINTLN("Chat: Non-200 response, returning empty answer");
+    print_openai_json_error_if_any(reply, "Chat");
     return "";
   }
 
-  // Extract content (keep same simplistic parsing style)
-  int idx = reply.indexOf("\"content\"");
-  if (idx == -1) {
-    PRINTLN("Chat: No 'content' field found");
+  // Parse response JSON with ArduinoJson
+  StaticJsonDocument<4096> resp;
+  DeserializationError err = deserializeJson(resp, reply);
+  if (err) {
+    PRINT("Chat: JSON parse failed: ");
+    PRINTLN(err.c_str());
     return "";
   }
-  int colon = reply.indexOf(":", idx);
-  if (colon < 0) return "";
-  int start = reply.indexOf("\"", colon);
-  if (start < 0) return "";
-  start++;
-  int end = reply.indexOf("\"", start);
-  if (end < 0) end = reply.length();
 
-  String answer = reply.substring(start, end);
-
-  // Unescape a minimal set of sequences
-  answer.replace("\\\"", "\"");
-  answer.replace("\\n", " ");
-  answer.replace("\\r", " ");
-  answer.replace("\\\\", "\\");
+  const char* content = resp["choices"][0]["message"]["content"] | "";
+  if (content[0] == '\0') {
+    PRINTLN("Chat: empty content");
+    return "";
+  }
 
   PRINT("Assistant answer: ");
-  PRINTLN(answer);
-  return answer;
+  PRINTLN(content);
+
+  return String(content);
 }
 
 // =====================================================================
-// Helper: JSON escape (for TTS input string)
-// =====================================================================
-String jsonEscape(const String& s) {
-  String out = "\"";
-  for (size_t i = 0; i < s.length(); ++i) {
-    char c = s[i];
-    switch (c) {
-      case '\"': out += "\\\""; break;
-      case '\\': out += "\\\\"; break;
-      case '\b': out += "\\b"; break;
-      case '\f': out += "\\f"; break;
-      case '\n': out += "\\n"; break;
-      case '\r': out += "\\r"; break;
-      case '\t': out += "\\t"; break;
-      default:
-        if ((uint8_t)c < 0x20) {
-          char buf[7];
-          sprintf(buf, "\\u%04x", (uint8_t)c);
-          out += buf;
-        } else {
-          out += c;
-        }
-    }
-  }
-  out += "\"";
-  return out;
-}
-
-// =====================================================================
-// DIRECT HTTPS: TTS (WAV) -> FULL BUFFER THEN PLAY (raw WiFiClientSecure)
+// TTS (PCM): Download full PCM into PSRAM buffer, then play
 // =====================================================================
 void openai_tts_play(const String& text) {
 
@@ -510,12 +546,11 @@ void openai_tts_play(const String& text) {
   i2s_zero_dma_buffer(I2S_NUM_1);
   i2s_start(I2S_NUM_1);
 
-  // Reset buffer state
-  tts_pcm_len = 0;
   if (!tts_pcm_buf) {
-    PRINTLN("TTS: No PSRAM buffer allocated for TTS.");
+    PRINTLN("TTS: PSRAM buffer not allocated");
     return;
   }
+  tts_pcm_len = 0;
 
   WiFiClientSecure client;
   client.setInsecure();
@@ -529,15 +564,14 @@ void openai_tts_play(const String& text) {
   PRINTLN("TTS: Connected.");
   PRINTF("TTS: Free heap after connect: %u\n", (unsigned)ESP.getFreeHeap());
 
-  // JSON body
+  // JSON body: request raw PCM output
   String body = "{";
   body += "\"model\":\"gpt-4o-mini-tts\",";
   body += "\"voice\":\"alloy\",";
-  body += "\"response_format\":\"wav\",";
+  body += "\"response_format\":\"pcm\",";
   body += "\"input\":" + jsonEscape(text);
   body += "}";
 
-  // HTTP request
   client.print("POST /v1/audio/speech HTTP/1.1\r\n");
   client.print("Host: api.openai.com\r\n");
   client.print("Authorization: Bearer " + String(OPENAI_API_KEY) + "\r\n");
@@ -546,7 +580,7 @@ void openai_tts_play(const String& text) {
   client.print("Connection: close\r\n\r\n");
   client.print(body);
 
-  // Read status line robustly
+  // Read status line
   PRINTLN("TTS: Reading status line...");
   String statusLine;
   while (client.connected()) {
@@ -555,7 +589,6 @@ void openai_tts_play(const String& text) {
     if (statusLine.length() == 0) continue;
     if (statusLine.startsWith("HTTP/")) break;
   }
-
   PRINT("TTS: Status: ");
   PRINTLN(statusLine);
 
@@ -567,7 +600,7 @@ void openai_tts_play(const String& text) {
     else          httpStatus = statusLine.substring(sp1 + 1).toInt();
   }
 
-  // Read headers
+  // Read headers (print for debug)
   PRINTLN("TTS: Reading headers...");
   while (client.connected()) {
     String line = client.readStringUntil('\n');
@@ -578,27 +611,22 @@ void openai_tts_play(const String& text) {
   }
 
   if (httpStatus != 200) {
-    PRINTF("TTS: Non-200 HTTP status (%d). Reading body as text...\n", httpStatus);
+    PRINTF("TTS: Non-200 (%d). Reading body as text...\n", httpStatus);
     String errBody;
     unsigned long t0 = millis();
     while ((client.connected() || client.available()) && (millis() - t0 < 7000)) {
       while (client.available()) errBody += (char)client.read();
       delay(1);
     }
-    PRINTLN("=== TTS ERROR BODY (RAW) ===");
+    print_openai_json_error_if_any(errBody, "TTS");
+    PRINTLN("TTS raw body:");
     PRINTLN(errBody);
-    PRINTLN("=== END TTS ERROR BODY ===");
     return;
   }
 
-  PRINTLN("TTS: Downloading and buffering audio...");
+  PRINTLN("TTS: Downloading and buffering PCM...");
 
-  // Skip the first 44 bytes of WAV payload
-  uint8_t wavHeader[44];
-  int headerPtr = 0;
-  bool headerDone = false;
-
-  // Chunked transfer decoding
+  // Decode chunked transfer encoding
   while (client.connected() || client.available()) {
 
     String sizeLine;
@@ -620,56 +648,24 @@ void openai_tts_play(const String& text) {
       if (len <= 0) continue;
       remaining -= len;
 
-      int offset = 0;
+      size_t space = (tts_pcm_len < MAX_TTS_BYTES) ? (MAX_TTS_BYTES - tts_pcm_len) : 0;
+      if (space == 0) continue;
 
-      // Consume WAV header (first 44 bytes of the payload stream)
-      if (!headerDone) {
-        int need = 44 - headerPtr;
-        int take = (len < need) ? len : need;
-        memcpy(wavHeader + headerPtr, buf, take);
-        headerPtr += take;
-        offset += take;
-
-        if (headerPtr == 44) {
-          headerDone = true;
-
-          uint32_t sampleRate = *(uint32_t*)&wavHeader[24];
-          uint16_t bits       = *(uint16_t*)&wavHeader[34];
-          uint16_t channels   = *(uint16_t*)&wavHeader[22];
-
-          PRINTF("TTS WAV header: %lu Hz, %u-bit, %u channels\n",
-                 (unsigned long)sampleRate, bits, channels);
-        }
-      }
-
-      // Store remaining audio bytes into PSRAM buffer
-      if (offset < len) {
-        int audioLen = len - offset;
-
-        size_t space = (tts_pcm_len < MAX_TTS_BYTES) ? (MAX_TTS_BYTES - tts_pcm_len) : 0;
-        if (space == 0) {
-          PRINTLN("TTS: Buffer full. Truncating audio.");
-          continue;
-        }
-
-        size_t copyLen = (audioLen <= (int)space) ? (size_t)audioLen : space;
-        memcpy(tts_pcm_buf + tts_pcm_len, buf + offset, copyLen);
-        tts_pcm_len += copyLen;
-
-        if (copyLen < (size_t)audioLen) {
-          PRINTLN("TTS: Buffer full mid-chunk. Truncating audio.");
-        }
-      }
+      size_t copyLen = ((size_t)len <= space) ? (size_t)len : space;
+      memcpy(tts_pcm_buf + tts_pcm_len, buf, copyLen);
+      tts_pcm_len += copyLen;
     }
 
-    // Consume CRLF after each chunk
+    // Consume CRLF after chunk
     client.readStringUntil('\n');
+
+    if (tts_pcm_len >= MAX_TTS_BYTES) break;
   }
 
-  PRINTF("TTS: Buffered %u bytes (max %u). Now playing...\n",
+  PRINTF("TTS: Buffered %u bytes (max %u). Playing...\n",
          (unsigned)tts_pcm_len, (unsigned)MAX_TTS_BYTES);
 
-  // Play buffered audio to I2S
+  // Play buffered PCM to I2S
   size_t played = 0;
   while (played < tts_pcm_len) {
     size_t toWrite = tts_pcm_len - played;
@@ -758,7 +754,7 @@ void setup() {
     while (true) delay(1000);
   }
 
-  PRINTF("PSRAM buffers allocated. TTS buffer max = %u bytes (%u sec)\n",
+  PRINTF("PSRAM buffers allocated. TTS max = %u bytes (%u sec)\n",
          (unsigned)MAX_TTS_BYTES, (unsigned)MAX_TTS_SECONDS);
 
   init_wifi_and_time();
@@ -769,7 +765,7 @@ void setup() {
 }
 
 // =====================================================================
-// LOOP: wait for long button press, then run full pipeline
+// LOOP: wait for long press, then run full pipeline
 // =====================================================================
 void loop() {
   digitalWrite(LED_PIN, HIGH);
@@ -777,11 +773,13 @@ void loop() {
   unsigned long now = millis();
   bool pressed = (digitalRead(BUTTON_PIN) == LOW);
 
+  // Button edge: press start
   if (pressed && !buttonPressed) {
     buttonPressed = true;
     pressStart = now;
   }
 
+  // Button edge: release
   if (!pressed && buttonPressed) {
     buttonPressed = false;
 
@@ -789,7 +787,6 @@ void loop() {
 
     if (dt >= LONG_PRESS_TIME) {
       digitalWrite(LED_PIN, LOW);
-
       PRINTLN("\n=== BUTTON TRIGGERED ===");
 
       record_audio();
@@ -809,6 +806,7 @@ void loop() {
       openai_tts_play(answer);
 
     } else {
+      // Short press ignored
       do_nop();
     }
   }
