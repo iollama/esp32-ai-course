@@ -1,7 +1,14 @@
-//TODO: move to responses API and save last respose
 //TODO: Add LED status
-//TODO: start with sofAP
-//TODO: create a configuration screen for system prompt + show last 3 messages
+//TODO: start with sofAP to configure the "right internet"- remember to set a ".local adress"
+//TODO: create a configuration screen for:
+// - system prompt
+// - temperture
+// - persist conversation
+//-  verbose logging
+//TODO: show the last three messages
+
+
+
 /*
   Voice Assistant (ESP32-S3)
   -------------------------
@@ -18,7 +25,9 @@
     1) Long-press button to trigger recording
     2) Record audio from INMP441 over I2S (RX)
     3) Send WAV to OpenAI transcription (STT), response_format = text
-    4) Send transcript to OpenAI chat completion (HTTPClient POST + ArduinoJson)
+    4) Send transcript to OpenAI Responses API (HTTPClient POST + ArduinoJson)
+       - First request has no previous_response_id
+       - Subsequent requests include previous_response_id from prior response.id
     5) Send answer to OpenAI TTS (response_format = pcm),
        download into fixed PSRAM buffer, then play over I2S (TX)
 
@@ -47,7 +56,7 @@
     - - -> GND
 
   Status LED
-    - GPIO 39
+    - LED -> GPIO 39
 */
 
 #include <WiFi.h>
@@ -60,13 +69,61 @@
 #include "esp32-hal-psram.h"
 #include "driver/i2s.h"
 
-// ------------------------------
+// =====================================================================
+// TUNING (KNOBS)
+// =====================================================================
+//
+// RECORD_SECONDS
+//   How long (seconds) to record from the microphone per request.
+//   Impact:
+//     - Longer: higher STT accuracy for long sentences, but bigger upload, more latency, more RAM/PSRAM.
+//     - Shorter: faster interaction, smaller buffers, but may cut speech.
+//
+// SAMPLE_RATE_OUT
+//   Playback sample rate (Hz) for TTS PCM output (speaker).
+//   Impact:
+//     - Higher: better audio quality, more bandwidth, more RAM/PSRAM for buffering.
+//     - Lower: less data, faster download, smaller buffer, but lower fidelity.
+//
+// MAX_TTS_SECONDS
+//   Maximum reply audio length we will buffer and play (hard cap).
+//   Impact:
+//     - Larger: allows longer spoken replies, but increases PSRAM buffer size and download time.
+//     - Smaller: reduces memory and latency, but may truncate long replies.
+//
+// SYS_INSTRUCTION
+//   System prompt controlling assistant response style (voice UX).
+//   Impact:
+//     - More strict/short: keeps TTS small and fast.
+//     - More verbose: increases TTS size/latency and buffering needs.
+//
+// VERBOSE_LOGGING
+//   If true: keep the detailed debug prints (raw replies, headers, etc.).
+//   If false: print only core operational logs (milestones, errors, key outputs).
+//
+#define RECORD_SECONDS   3
+#define SAMPLE_RATE_OUT  24000
+#define MAX_TTS_SECONDS  15
+
+static const char* SYS_INSTRUCTION =
+  "You are a helpful assistant. Answer in at most 2 short sentences suitable to be spoken aloud.";
+
+#define VERBOSE_LOGGING  true
+
+// =====================================================================
 // SERIAL OUTPUT CONTROL
-// ------------------------------
+// =====================================================================
 #define SERIAL_ON true
-#define PRINT(x)       do { if (SERIAL_ON) Serial.print(x); } while (0)
-#define PRINTLN(x)     do { if (SERIAL_ON) Serial.println(x); } while (0)
-#define PRINTF(...)    do { if (SERIAL_ON) Serial.printf(__VA_ARGS__); } while (0)
+
+// Core logging (always shown when SERIAL_ON == true)
+#define CPRINT(x)    do { if (SERIAL_ON) Serial.print(x); } while (0)
+#define CPRINTLN(x)  do { if (SERIAL_ON) Serial.println(x); } while (0)
+#define CPRINTF(...) do { if (SERIAL_ON) Serial.printf(__VA_ARGS__); } while (0)
+
+// Verbose logging (only when VERBOSE_LOGGING == true)
+#define VPRINT(x)    do { if (SERIAL_ON && VERBOSE_LOGGING) Serial.print(x); } while (0)
+#define VPRINTLN(x)  do { if (SERIAL_ON && VERBOSE_LOGGING) Serial.println(x); } while (0)
+#define VPRINTF(...) do { if (SERIAL_ON && VERBOSE_LOGGING) Serial.printf(__VA_ARGS__); } while (0)
 
 // ------------------------------
 // GENERAL PINS
@@ -91,7 +148,6 @@ const char* ntpServer = "pool.ntp.org";
 // AUDIO SETTINGS (MIC)
 // ------------------------------
 #define SAMPLE_RATE_IN 16000
-#define RECORD_SECONDS 3
 #define NUM_SAMPLES (SAMPLE_RATE_IN * RECORD_SECONDS)
 #define I2S_CHUNK_SAMPLES 1024
 
@@ -101,13 +157,8 @@ static const gpio_num_t I2S_WS_IN  = GPIO_NUM_41;  // LRCLK
 static const gpio_num_t I2S_SD_IN  = GPIO_NUM_40;  // DOUT from mic
 
 // ------------------------------
-// AUDIO SETTINGS (SPEAKER / TTS)
-// ------------------------------
-// Playback configuration for PCM output.
-// We assume the returned PCM is 16-bit mono little-endian.
-#define SAMPLE_RATE_OUT 24000
-
 // MAX98357A I2S TX pins
+// ------------------------------
 static const gpio_num_t I2S_BCLK_OUT = GPIO_NUM_47;
 static const gpio_num_t I2S_LRCLK_OUT = GPIO_NUM_21;
 static const gpio_num_t I2S_DOUT_OUT = GPIO_NUM_17;
@@ -115,7 +166,6 @@ static const gpio_num_t I2S_DOUT_OUT = GPIO_NUM_17;
 // ------------------------------
 // TTS FULL-BUFFER SETTINGS (PSRAM)
 // ------------------------------
-#define MAX_TTS_SECONDS 15
 #define TTS_BYTES_PER_SEC (SAMPLE_RATE_OUT * 2)   // 16-bit mono = 2 bytes/sample
 #define MAX_TTS_BYTES (MAX_TTS_SECONDS * TTS_BYTES_PER_SEC)
 
@@ -129,6 +179,11 @@ int32_t* raw_buf = nullptr;  // 32-bit I2S mic frames
 int16_t* pcm_buf = nullptr;  // 16-bit PCM samples for WAV upload
 
 // ------------------------------
+// Responses API conversation state
+// ------------------------------
+String g_prev_response_id = "";
+
+// ------------------------------
 // Small helper: inline NOP for short press
 // ------------------------------
 static inline void do_nop() {
@@ -136,7 +191,7 @@ static inline void do_nop() {
 }
 
 // =====================================================================
-// Helper: JSON escape for TTS "input" (kept small and deterministic)
+// Helper: JSON escape for TTS "input"
 // =====================================================================
 String jsonEscape(const String& s) {
   String out = "\"";
@@ -171,7 +226,7 @@ void print_openai_json_error_if_any(const String& body, const char* tag) {
   StaticJsonDocument<1024> doc;
   DeserializationError err = deserializeJson(doc, body);
   if (err) {
-    PRINTF("%s: non-JSON error body (or parse failed)\n", tag);
+    CPRINTF("%s: error body was not valid JSON (or parse failed)\n", tag);
     return;
   }
 
@@ -179,9 +234,59 @@ void print_openai_json_error_if_any(const String& body, const char* tag) {
   const char* type = doc["error"]["type"] | "";
   const char* code = doc["error"]["code"] | "";
 
-  PRINTF("%s: error.message: %s\n", tag, msg);
-  if (type[0]) PRINTF("%s: error.type: %s\n", tag, type);
-  if (code[0]) PRINTF("%s: error.code: %s\n", tag, code);
+  CPRINTF("%s: error.message: %s\n", tag, msg);
+  if (type[0]) CPRINTF("%s: error.type: %s\n", tag, type);
+  if (code[0]) CPRINTF("%s: error.code: %s\n", tag, code);
+}
+
+// =====================================================================
+// Helper: Extract assistant text and response.id from Responses API JSON
+// =====================================================================
+bool parse_responses_api_text_and_id(const String& json,
+                                    String& out_text,
+                                    String& out_id) {
+  out_text = "";
+  out_id = "";
+
+  StaticJsonDocument<6144> doc;
+  DeserializationError err = deserializeJson(doc, json);
+  if (err) {
+    CPRINT("Responses: JSON parse failed: ");
+    CPRINTLN(err.c_str());
+    return false;
+  }
+
+  out_id = (const char*)(doc["id"] | "");
+
+  JsonArray output = doc["output"].as<JsonArray>();
+  if (output.isNull()) {
+    CPRINTLN("Responses: missing output[]");
+    return false;
+  }
+
+  for (JsonObject item : output) {
+    const char* type = item["type"] | "";
+    if (strcmp(type, "message") != 0) continue;
+
+    JsonArray content = item["content"].as<JsonArray>();
+    if (content.isNull()) continue;
+
+    for (JsonObject c : content) {
+      const char* ctype = c["type"] | "";
+      if (strcmp(ctype, "output_text") == 0) {
+        const char* txt = c["text"] | "";
+        if (txt[0]) out_text += String(txt);
+      }
+    }
+  }
+
+  out_text.trim();
+  if (out_text.length() == 0) {
+    CPRINTLN("Responses: no output_text found");
+    return false;
+  }
+
+  return true;
 }
 
 // =====================================================================
@@ -213,7 +318,7 @@ void init_i2s_speaker_legacy(uint32_t sampleRate) {
   i2s_set_pin(I2S_NUM_1, &pins);
   i2s_zero_dma_buffer(I2S_NUM_1);
 
-  PRINTF("I2S speaker ready @ %u Hz\n", (unsigned)sampleRate);
+  CPRINTF("I2S speaker ready @ %u Hz\n", (unsigned)sampleRate);
 }
 
 // =====================================================================
@@ -278,22 +383,22 @@ void setup_i2s_mic() {
 
   esp_err_t err = i2s_driver_install(I2S_NUM_0, &config, 0, NULL);
   if (err != ESP_OK) {
-    PRINTF("I2S mic: driver_install failed: %d\n", err);
+    CPRINTF("I2S mic: driver_install failed: %d\n", err);
     return;
   }
 
   err = i2s_set_pin(I2S_NUM_0, &pins);
   if (err != ESP_OK) {
-    PRINTF("I2S mic: set_pin failed: %d\n", err);
+    CPRINTF("I2S mic: set_pin failed: %d\n", err);
     return;
   }
 
   i2s_zero_dma_buffer(I2S_NUM_0);
-  PRINTLN("I2S microphone ready (legacy, INMP441).");
+  CPRINTLN("I2S microphone ready (legacy, INMP441).");
 }
 
 // =====================================================================
-// I2S SPEAKER SETUP (TX) for MAX98357A (legacy driver on I2S_NUM_1)
+// I2S SPEAKER SETUP (TX)
 // =====================================================================
 void setup_i2s_speaker() {
   init_i2s_speaker_legacy(SAMPLE_RATE_OUT);
@@ -303,7 +408,7 @@ void setup_i2s_speaker() {
 // RECORD FROM MIC INTO pcm_buf (16-bit PCM)
 // =====================================================================
 void record_audio() {
-  PRINTLN("\nRecording 3 seconds...");
+  CPRINTF("\nRecording %d seconds...\n", (int)RECORD_SECONDS);
 
   int samples_collected = 0;
 
@@ -321,8 +426,8 @@ void record_audio() {
                              portMAX_DELAY);
 
     if (err != ESP_OK) {
-      PRINT("I2S read error: ");
-      PRINTLN((int)err);
+      CPRINT("I2S read error: ");
+      CPRINTLN((int)err);
       break;
     }
 
@@ -331,15 +436,14 @@ void record_audio() {
     yield();
   }
 
-  PRINT("Collected samples: ");
-  PRINTLN(samples_collected);
+  CPRINT("Collected samples: ");
+  CPRINTLN(samples_collected);
 
   if (samples_collected < NUM_SAMPLES) {
-    PRINTLN("Warning: not all samples collected, filling rest with zeros.");
+    CPRINTLN("Warning: not all samples collected, filling rest with zeros.");
     for (int i = samples_collected; i < NUM_SAMPLES; i++) raw_buf[i] = 0;
   }
 
-  // Convert 32-bit mic frames to 16-bit PCM (simple shift)
   for (int i = 0; i < NUM_SAMPLES; i++) {
     pcm_buf[i] = (int16_t)(raw_buf[i] >> 16);
   }
@@ -353,11 +457,11 @@ String openai_transcribe() {
   client.setInsecure();
 
   if (!client.connect("api.openai.com", 443)) {
-    PRINTLN("STT: HTTPS connection failed");
+    CPRINTLN("STT: HTTPS connection failed");
     return "";
   }
 
-  PRINTLN("STT: Connected to OpenAI.");
+  CPRINTLN("STT: Connected.");
 
   String boundary = "----ESP32BOUNDARY";
 
@@ -416,7 +520,7 @@ String openai_transcribe() {
   client.write((const uint8_t*)part_respfmt.c_str(), part_respfmt.length());
   client.write((const uint8_t*)part_end.c_str(), part_end.length());
 
-  PRINTLN("STT: Sent. Reading reply...");
+  CPRINTLN("STT: Sent. Reading reply...");
 
   // Read status line
   String statusLine;
@@ -426,8 +530,8 @@ String openai_transcribe() {
     if (statusLine.length() == 0) continue;
     if (statusLine.startsWith("HTTP/")) break;
   }
-  PRINT("STT: Status: ");
-  PRINTLN(statusLine);
+  VPRINT("STT: Status: ");
+  VPRINTLN(statusLine);
 
   int httpStatus = -1;
   int sp1 = statusLine.indexOf(' ');
@@ -443,7 +547,7 @@ String openai_transcribe() {
     if (line == "\r" || line == "") break;
   }
 
-  // Read body (text transcript on success; JSON on error sometimes)
+  // Read body
   String body;
   while (client.connected() || client.available()) {
     while (client.available()) body += (char)client.read();
@@ -451,54 +555,57 @@ String openai_transcribe() {
   }
 
   if (httpStatus != 200) {
-    PRINTF("STT: Non-200 (%d)\n", httpStatus);
+    CPRINTF("STT: Non-200 (%d)\n", httpStatus);
     print_openai_json_error_if_any(body, "STT");
-    PRINTLN("STT raw body:");
-    PRINTLN(body);
+    VPRINTLN("STT raw body:");
+    VPRINTLN(body);
     return "";
   }
 
   body.trim();
-  PRINT("Transcription: ");
-  PRINTLN(body);
+  CPRINT("Transcription: ");
+  CPRINTLN(body);
   return body;
 }
 
 // =====================================================================
-// Chat completion -> short spoken-style answer (HTTPClient + ArduinoJson)
+// Responses API: short answer with previous_response_id chaining
 // =====================================================================
-String openai_answer(const String& question) {
-  PRINTLN("Chat: POST /v1/chat/completions");
+String openai_answer_responses(const String& question) {
+  CPRINTLN("Responses: POST /v1/responses");
 
   WiFiClientSecure client;
   client.setInsecure();
 
   HTTPClient http;
 
-  // Build request JSON with ArduinoJson
-  StaticJsonDocument<768> req;
+  StaticJsonDocument<1024> req;
   req["model"] = "gpt-4o-mini";
 
-  JsonArray messages = req.createNestedArray("messages");
+  JsonArray input = req.createNestedArray("input");
 
-  JsonObject sys = messages.createNestedObject();
+  JsonObject sys = input.createNestedObject();
   sys["role"] = "system";
-  sys["content"] = "You are a helpful assistant. Answer in at most 2 short sentences suitable to be spoken aloud.";
+  sys["content"] = SYS_INSTRUCTION;
 
-  JsonObject usr = messages.createNestedObject();
+  JsonObject usr = input.createNestedObject();
   usr["role"] = "user";
   usr["content"] = question;
+
+  if (g_prev_response_id.length() > 0) {
+    req["previous_response_id"] = g_prev_response_id;
+  }
 
   String body;
   serializeJson(req, body);
 
-  if (!http.begin(client, "https://api.openai.com/v1/chat/completions")) {
-    PRINTLN("Chat: http.begin failed");
+  if (!http.begin(client, "https://api.openai.com/v1/responses")) {
+    CPRINTLN("Responses: http.begin failed");
     http.end();
     return "";
   }
 
-  http.setTimeout(15000);
+  http.setTimeout(20000);
   http.addHeader("Content-Type", "application/json");
   http.addHeader("Authorization", "Bearer " + String(OPENAI_API_KEY));
 
@@ -506,48 +613,47 @@ String openai_answer(const String& question) {
   String reply = http.getString();
   http.end();
 
-  PRINTF("Chat: HTTP status = %d\n", httpCode);
-  PRINTLN("=== RAW CHAT REPLY ===");
-  PRINTLN(reply);
+  CPRINTF("Responses: HTTP status = %d\n", httpCode);
+
+  VPRINTLN("=== RAW RESPONSES REPLY ===");
+  VPRINTLN(reply);
 
   if (httpCode != 200) {
-    print_openai_json_error_if_any(reply, "Chat");
+    print_openai_json_error_if_any(reply, "Responses");
     return "";
   }
 
-  // Parse response JSON with ArduinoJson
-  StaticJsonDocument<4096> resp;
-  DeserializationError err = deserializeJson(resp, reply);
-  if (err) {
-    PRINT("Chat: JSON parse failed: ");
-    PRINTLN(err.c_str());
+  String answerText;
+  String responseId;
+  if (!parse_responses_api_text_and_id(reply, answerText, responseId)) {
+    CPRINTLN("Responses: failed to extract text/id");
     return "";
   }
 
-  const char* content = resp["choices"][0]["message"]["content"] | "";
-  if (content[0] == '\0') {
-    PRINTLN("Chat: empty content");
-    return "";
+  if (responseId.length() > 0) {
+    g_prev_response_id = responseId;
+    VPRINT("Responses: stored previous_response_id = ");
+    VPRINTLN(g_prev_response_id);
+  } else {
+    VPRINTLN("Responses: warning - missing response.id");
   }
 
-  PRINT("Assistant answer: ");
-  PRINTLN(content);
+  CPRINT("Assistant answer: ");
+  CPRINTLN(answerText);
 
-  return String(content);
+  return answerText;
 }
 
 // =====================================================================
 // TTS (PCM): Download full PCM into PSRAM buffer, then play
 // =====================================================================
 void openai_tts_play(const String& text) {
-
-  // Reset speaker DMA
   i2s_stop(I2S_NUM_1);
   i2s_zero_dma_buffer(I2S_NUM_1);
   i2s_start(I2S_NUM_1);
 
   if (!tts_pcm_buf) {
-    PRINTLN("TTS: PSRAM buffer not allocated");
+    CPRINTLN("TTS: PSRAM buffer not allocated");
     return;
   }
   tts_pcm_len = 0;
@@ -555,16 +661,15 @@ void openai_tts_play(const String& text) {
   WiFiClientSecure client;
   client.setInsecure();
 
-  PRINTF("TTS: Free heap before connect: %u\n", (unsigned)ESP.getFreeHeap());
-  PRINTLN("TTS: Connecting to OpenAI...");
+  VPRINTF("TTS: Free heap before connect: %u\n", (unsigned)ESP.getFreeHeap());
+  CPRINTLN("TTS: Connecting...");
   if (!client.connect("api.openai.com", 443)) {
-    PRINTLN("TTS: HTTPS connection failed");
+    CPRINTLN("TTS: HTTPS connection failed");
     return;
   }
-  PRINTLN("TTS: Connected.");
-  PRINTF("TTS: Free heap after connect: %u\n", (unsigned)ESP.getFreeHeap());
+  CPRINTLN("TTS: Connected.");
+  VPRINTF("TTS: Free heap after connect: %u\n", (unsigned)ESP.getFreeHeap());
 
-  // JSON body: request raw PCM output
   String body = "{";
   body += "\"model\":\"gpt-4o-mini-tts\",";
   body += "\"voice\":\"alloy\",";
@@ -581,7 +686,7 @@ void openai_tts_play(const String& text) {
   client.print(body);
 
   // Read status line
-  PRINTLN("TTS: Reading status line...");
+  VPRINTLN("TTS: Reading status line...");
   String statusLine;
   while (client.connected()) {
     statusLine = client.readStringUntil('\n');
@@ -589,8 +694,8 @@ void openai_tts_play(const String& text) {
     if (statusLine.length() == 0) continue;
     if (statusLine.startsWith("HTTP/")) break;
   }
-  PRINT("TTS: Status: ");
-  PRINTLN(statusLine);
+  VPRINT("TTS: Status: ");
+  VPRINTLN(statusLine);
 
   int httpStatus = -1;
   int sp1 = statusLine.indexOf(' ');
@@ -600,18 +705,18 @@ void openai_tts_play(const String& text) {
     else          httpStatus = statusLine.substring(sp1 + 1).toInt();
   }
 
-  // Read headers (print for debug)
-  PRINTLN("TTS: Reading headers...");
+  // Read headers (verbose)
+  VPRINTLN("TTS: Reading headers...");
   while (client.connected()) {
     String line = client.readStringUntil('\n');
     if (line == "\r" || line == "") break;
     line.trim();
-    PRINT("TTS HDR: ");
-    PRINTLN(line);
+    VPRINT("TTS HDR: ");
+    VPRINTLN(line);
   }
 
   if (httpStatus != 200) {
-    PRINTF("TTS: Non-200 (%d). Reading body as text...\n", httpStatus);
+    CPRINTF("TTS: Non-200 (%d). Reading body as text...\n", httpStatus);
     String errBody;
     unsigned long t0 = millis();
     while ((client.connected() || client.available()) && (millis() - t0 < 7000)) {
@@ -619,16 +724,15 @@ void openai_tts_play(const String& text) {
       delay(1);
     }
     print_openai_json_error_if_any(errBody, "TTS");
-    PRINTLN("TTS raw body:");
-    PRINTLN(errBody);
+    VPRINTLN("TTS raw body:");
+    VPRINTLN(errBody);
     return;
   }
 
-  PRINTLN("TTS: Downloading and buffering PCM...");
+  CPRINTLN("TTS: Downloading and buffering PCM...");
 
-  // Decode chunked transfer encoding
+  // Chunked transfer decoding
   while (client.connected() || client.available()) {
-
     String sizeLine;
     do {
       sizeLine = client.readStringUntil('\n');
@@ -646,6 +750,7 @@ void openai_tts_play(const String& text) {
       int toRead = min(remaining, (int)sizeof(buf));
       int len = client.read(buf, toRead);
       if (len <= 0) continue;
+
       remaining -= len;
 
       size_t space = (tts_pcm_len < MAX_TTS_BYTES) ? (MAX_TTS_BYTES - tts_pcm_len) : 0;
@@ -662,10 +767,9 @@ void openai_tts_play(const String& text) {
     if (tts_pcm_len >= MAX_TTS_BYTES) break;
   }
 
-  PRINTF("TTS: Buffered %u bytes (max %u). Playing...\n",
-         (unsigned)tts_pcm_len, (unsigned)MAX_TTS_BYTES);
+  CPRINTF("TTS: Buffered %u bytes (max %u). Playing...\n",
+          (unsigned)tts_pcm_len, (unsigned)MAX_TTS_BYTES);
 
-  // Play buffered PCM to I2S
   size_t played = 0;
   while (played < tts_pcm_len) {
     size_t toWrite = tts_pcm_len - played;
@@ -674,48 +778,47 @@ void openai_tts_play(const String& text) {
     size_t written = 0;
     i2s_write(I2S_NUM_1, tts_pcm_buf + played, toWrite, &written, portMAX_DELAY);
     played += written;
-
     yield();
   }
 
-  PRINTLN("TTS: Playback complete.");
+  CPRINTLN("TTS: Playback complete.");
 }
 
 // =====================================================================
 // WiFi + NTP init
 // =====================================================================
 void init_wifi_and_time() {
-  PRINTLN("=== WiFi INIT ===");
+  CPRINTLN("=== WiFi INIT ===");
   WiFi.mode(WIFI_STA);
   WiFi.disconnect(true, true);
   delay(300);
 
-  PRINT("Connecting to: ");
-  PRINTLN(WIFI_SSID);
+  CPRINT("Connecting to: ");
+  CPRINTLN(WIFI_SSID);
 
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
 
   unsigned long startAttempt = millis();
   while (WiFi.status() != WL_CONNECTED && millis() - startAttempt < 15000) {
-    PRINT(".");
+    CPRINT(".");
     delay(500);
   }
 
   if (WiFi.status() != WL_CONNECTED) {
-    PRINTLN("\nWiFi FAILED on first attempt. Retrying...");
+    CPRINTLN("\nWiFi FAILED on first attempt. Retrying...");
     WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
     while (WiFi.status() != WL_CONNECTED) {
-      PRINT("+");
+      CPRINT("+");
       delay(500);
     }
   }
 
-  PRINTLN("\nWiFi OK!");
-  PRINT("IP: ");
-  PRINTLN(WiFi.localIP());
-  PRINTLN("=====================");
+  CPRINTLN("\nWiFi OK!");
+  CPRINT("IP: ");
+  CPRINTLN(WiFi.localIP());
+  CPRINTLN("=====================");
 
-  PRINTLN("Syncing time via NTP...");
+  CPRINTLN("Syncing time via NTP...");
   configTime(0, 0, ntpServer, "time.nist.gov", "time.google.com");
 
   time_t now = 0;
@@ -727,9 +830,9 @@ void init_wifi_and_time() {
   }
 
   if (now < 100000) {
-    PRINTLN("Time sync failed.");
+    CPRINTLN("Time sync failed.");
   } else {
-    PRINTF("Time synced: %s\n", ctime(&now));
+    VPRINTF("Time synced: %s\n", ctime(&now));
   }
 }
 
@@ -743,25 +846,25 @@ void setup() {
   pinMode(BUTTON_PIN, INPUT_PULLUP);
   pinMode(LED_PIN, OUTPUT);
 
-  PRINTLN("Allocating PSRAM buffers...");
+  CPRINTLN("Allocating PSRAM buffers...");
 
   raw_buf = (int32_t*)ps_malloc((size_t)NUM_SAMPLES * sizeof(int32_t));
   pcm_buf = (int16_t*)ps_malloc((size_t)NUM_SAMPLES * sizeof(int16_t));
   tts_pcm_buf = (uint8_t*)ps_malloc((size_t)MAX_TTS_BYTES);
 
   if (!raw_buf || !pcm_buf || !tts_pcm_buf) {
-    PRINTLN("PSRAM allocation failed!");
+    CPRINTLN("PSRAM allocation failed!");
     while (true) delay(1000);
   }
 
-  PRINTF("PSRAM buffers allocated. TTS max = %u bytes (%u sec)\n",
-         (unsigned)MAX_TTS_BYTES, (unsigned)MAX_TTS_SECONDS);
+  CPRINTF("PSRAM buffers allocated. TTS max = %u bytes (%u sec)\n",
+          (unsigned)MAX_TTS_BYTES, (unsigned)MAX_TTS_SECONDS);
 
   init_wifi_and_time();
   setup_i2s_mic();
   setup_i2s_speaker();
 
-  PRINTLN("Ready. Long press button to ask a question.");
+  CPRINTLN("Ready. Long press button to ask a question.");
 }
 
 // =====================================================================
@@ -773,13 +876,11 @@ void loop() {
   unsigned long now = millis();
   bool pressed = (digitalRead(BUTTON_PIN) == LOW);
 
-  // Button edge: press start
   if (pressed && !buttonPressed) {
     buttonPressed = true;
     pressStart = now;
   }
 
-  // Button edge: release
   if (!pressed && buttonPressed) {
     buttonPressed = false;
 
@@ -787,26 +888,25 @@ void loop() {
 
     if (dt >= LONG_PRESS_TIME) {
       digitalWrite(LED_PIN, LOW);
-      PRINTLN("\n=== BUTTON TRIGGERED ===");
+      CPRINTLN("\n=== BUTTON TRIGGERED ===");
 
       record_audio();
 
       String question = openai_transcribe();
       if (question.length() == 0) {
-        PRINTLN("No question received from STT.");
+        CPRINTLN("No question received from STT.");
         return;
       }
 
-      String answer = openai_answer(question);
+      String answer = openai_answer_responses(question);
       if (answer.length() == 0) {
-        PRINTLN("No answer from Chat.");
+        CPRINTLN("No answer from Responses API.");
         return;
       }
 
       openai_tts_play(answer);
 
     } else {
-      // Short press ignored
       do_nop();
     }
   }
