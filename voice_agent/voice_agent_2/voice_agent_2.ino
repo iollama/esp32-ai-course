@@ -1,3 +1,9 @@
+//TODO: Add LED status
+//TODO: start with sofAP
+//TODO: move to responses API and save last respose
+//TODO: create a configuration screen for system prompt + show last 3 messages
+
+
 /*
   Voice Assistant (ESP32-S3)
   -------------------------
@@ -523,12 +529,17 @@ void openai_tts_play(const String& text) {
   WiFiClientSecure client;
   client.setInsecure();
 
+  // Memory diagnostics around TLS
+  PRINTF("TTS: Free heap before connect: %u\n", (unsigned)ESP.getFreeHeap());
+
   PRINTLN("TTS: Connecting to OpenAI...");
   if (!client.connect("api.openai.com", 443)) {
     PRINTLN("TTS: HTTPS connection failed");
     return;
   }
   PRINTLN("TTS: Connected.");
+
+  PRINTF("TTS: Free heap after connect: %u\n", (unsigned)ESP.getFreeHeap());
 
   // JSON body
   String body = "{";
@@ -547,11 +558,61 @@ void openai_tts_play(const String& text) {
   client.print("Connection: close\r\n\r\n");
   client.print(body);
 
-  // Read and discard headers
+  // ----- Read status line robustly -----
+  PRINTLN("TTS: Reading status line...");
+  String statusLine;
+
+  // IMPORTANT: read until we find the real HTTP status line (starts with "HTTP/")
+  while (client.connected()) {
+    statusLine = client.readStringUntil('\n');
+    statusLine.trim();
+    if (statusLine.length() == 0) continue;
+    if (statusLine.startsWith("HTTP/")) break;
+  }
+
+  PRINT("TTS: Status: ");
+  PRINTLN(statusLine);
+
+  int httpStatus = -1;
+  // Expected: HTTP/1.1 200 OK
+  int sp1 = statusLine.indexOf(' ');
+  if (sp1 >= 0) {
+    int sp2 = statusLine.indexOf(' ', sp1 + 1);
+    if (sp2 >= 0) {
+      httpStatus = statusLine.substring(sp1 + 1, sp2).toInt();
+    } else {
+      httpStatus = statusLine.substring(sp1 + 1).toInt();
+    }
+  }
+
+  // ----- Read headers -----
   PRINTLN("TTS: Reading headers...");
   while (client.connected()) {
     String line = client.readStringUntil('\n');
     if (line == "\r" || line == "") break;
+
+    // Print raw headers for debugging
+    line.trim();
+    PRINT("TTS HDR: ");
+    PRINTLN(line);
+  }
+
+  // If we did not get HTTP 200, the server likely returned a JSON error body.
+  // Print it verbosely as text and stop (otherwise chunk parsing will misbehave).
+  if (httpStatus != 200) {
+    PRINTF("TTS: Non-200 HTTP status (%d). Reading body as text...\n", httpStatus);
+    String errBody;
+    unsigned long t0 = millis();
+    while ((client.connected() || client.available()) && (millis() - t0 < 7000)) {
+      while (client.available()) {
+        errBody += (char)client.read();
+      }
+      delay(1);
+    }
+    PRINTLN("=== TTS ERROR BODY (RAW) ===");
+    PRINTLN(errBody);
+    PRINTLN("=== END TTS ERROR BODY ===");
+    return;
   }
 
   PRINTLN("TTS: Starting chunk stream...");
@@ -570,6 +631,11 @@ void openai_tts_play(const String& text) {
     } while (sizeLine.length() == 0 && (client.connected() || client.available()));
 
     if (sizeLine.length() == 0) break;
+
+    // Debug: show the exact chunk-size line we parsed
+    PRINT("TTS chunk size line: '");
+    PRINT(sizeLine);
+    PRINTLN("'");
 
     int chunkSize = strtol(sizeLine.c_str(), NULL, 16);
     PRINTF("TTS chunk size = %d\n", chunkSize);
