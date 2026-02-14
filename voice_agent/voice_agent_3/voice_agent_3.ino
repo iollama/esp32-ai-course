@@ -130,14 +130,33 @@ boolean ap_mode = false;
 //   If true: keep the detailed debug prints (raw replies, headers, etc.).
 //   If false: print only core operational logs (milestones, errors, key outputs).
 //
-#define RECORD_SECONDS 3
-#define SAMPLE_RATE_OUT 24000
-#define MAX_TTS_SECONDS 15
+#define RECORD_SECONDS   3
+#define SAMPLE_RATE_OUT  24000
+#define MAX_TTS_SECONDS  15
 
-static const char* SYS_INSTRUCTION =
-  "You are a helpful assistant. Answer in at most 2 short sentences suitable to be spoken aloud.";
+//
+// DEFAULT_SYS_INSTRUCTION
+//   Default system prompt if not set in NVS. Controls assistant's persona.
+//
+// DEFAULT_TEMPERATURE
+//   Default model temperature (0.0-2.0) if not set in NVS. Higher = more creative.
+//
+// DEFAULT_PERSIST_CONVO
+//   Default conversation persistence (true/false) if not set in NVS.
+//
+// DEFAULT_VERBOSE_LOGGING
+//   Default verbose logging setting if not set in NVS.
+//
+#define DEFAULT_SYS_INSTRUCTION "You are a helpful assistant. Answer in at most 2 short sentences suitable to be spoken aloud."
+#define DEFAULT_TEMPERATURE      0.7f
+#define DEFAULT_PERSIST_CONVO    true
+#define DEFAULT_VERBOSE_LOGGING  true
 
-#define VERBOSE_LOGGING true
+// These will be loaded from NVS or set to default by load_agent_config()
+String g_sys_instruction;
+float  g_temperature;
+bool   g_persist_conversation;
+bool   g_verbose_logging;
 
 // =====================================================================
 // SERIAL OUTPUT CONTROL
@@ -158,18 +177,18 @@ static const char* SYS_INSTRUCTION =
     if (SERIAL_ON) Serial.printf(__VA_ARGS__); \
   } while (0)
 
-// Verbose logging (only when VERBOSE_LOGGING == true)
+// Verbose logging (only when g_verbose_logging == true)
 #define VPRINT(x) \
   do { \
-    if (SERIAL_ON && VERBOSE_LOGGING) Serial.print(x); \
+    if (SERIAL_ON && g_verbose_logging) Serial.print(x); \
   } while (0)
 #define VPRINTLN(x) \
   do { \
-    if (SERIAL_ON && VERBOSE_LOGGING) Serial.println(x); \
+    if (SERIAL_ON && g_verbose_logging) Serial.println(x); \
   } while (0)
 #define VPRINTF(...) \
   do { \
-    if (SERIAL_ON && VERBOSE_LOGGING) Serial.printf(__VA_ARGS__); \
+    if (SERIAL_ON && g_verbose_logging) Serial.printf(__VA_ARGS__); \
   } while (0)
 
 // ------------------------------
@@ -672,25 +691,30 @@ String openai_answer_responses(const String& question) {
 
   HTTPClient http;
 
-  StaticJsonDocument<1024> req;
+  StaticJsonDocument<2048> req; // Increased size for longer prompt
   req["model"] = "gpt-4o-mini";
+  req["temperature"] = g_temperature;
 
   JsonArray input = req.createNestedArray("input");
 
   JsonObject sys = input.createNestedObject();
   sys["role"] = "system";
-  sys["content"] = SYS_INSTRUCTION;
+  sys["content"] = g_sys_instruction;
 
   JsonObject usr = input.createNestedObject();
   usr["role"] = "user";
   usr["content"] = question;
 
-  if (g_prev_response_id.length() > 0) {
+  if (g_persist_conversation && g_prev_response_id.length() > 0) {
     req["previous_response_id"] = g_prev_response_id;
   }
 
   String body;
   serializeJson(req, body);
+
+  VPRINTLN("--- RESPONSES API REQUEST ---");
+  VPRINTLN(body);
+  VPRINTLN("---------------------------");
 
   if (!http.begin(client, "https://api.openai.com/v1/responses")) {
     CPRINTLN("Responses: http.begin failed");
@@ -881,6 +905,27 @@ void openai_tts_play(const String& text) {
 }
 
 // =====================================================================
+// AGENT CONFIG (NVS)
+// =====================================================================
+void load_agent_config() {
+  preferences.begin("agentConfig", true); // read-only
+
+  g_sys_instruction = preferences.getString("sysPrompt", DEFAULT_SYS_INSTRUCTION);
+  g_temperature = preferences.getFloat("temp", DEFAULT_TEMPERATURE);
+  g_persist_conversation = preferences.getBool("persist", DEFAULT_PERSIST_CONVO);
+  g_verbose_logging = preferences.getBool("verbose", DEFAULT_VERBOSE_LOGGING);
+
+  preferences.end();
+
+  CPRINTLN("--- Agent Config Loaded ---");
+  CPRINTF("System Prompt: %.60s...\n", g_sys_instruction.c_str());
+  CPRINTF("Temperature: %.2f\n", g_temperature);
+  CPRINTF("Persist Convo: %s\n", g_persist_conversation ? "true" : "false");
+  CPRINTF("Verbose Logs: %s\n", g_verbose_logging ? "true" : "false");
+  CPRINTLN("---------------------------");
+}
+
+// =====================================================================
 // WIFI / SoftAP / NVS
 // =====================================================================
 
@@ -907,54 +952,84 @@ void handle_root() {
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Voice Agent - WiFi Config</title>
+    <title>Voice Agent - Config</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
         body { font-family: Arial, sans-serif; background-color: #f4f4f4; margin: 0; padding: 20px; }
-        .container { background-color: #fff; max-width: 500px; margin: auto; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        .container { background-color: #fff; max-width: 600px; margin: auto; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
         h2, h3 { color: #333; }
         .form-group { margin-bottom: 15px; }
+        .form-group-inline { display: flex; align-items: center; }
+        .form-group-inline label { margin-right: 10px; font-weight: normal; }
         label { display: block; margin-bottom: 5px; font-weight: bold; }
-        input[type="text"], input[type="password"] { width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px; box-sizing: border-box; }
+        input[type="text"], input[type="password"], input[type="number"], textarea { width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px; box-sizing: border-box; }
+        textarea { resize: vertical; min-height: 100px; }
         .btn { background-color: #007bff; color: white; padding: 10px 15px; border: none; border-radius: 4px; cursor: pointer; font-size: 16px; width: 100%; box-sizing: border-box; }
         .btn:hover { background-color: #0056b3; }
         .btn-danger { background-color: #dc3545; }
         .btn-danger:hover { background-color: #c82333; }
+        .btn-secondary { background-color: #6c757d; }
+        .btn-secondary:hover { background-color: #5a6268; }
         hr { border: 0; border-top: 1px solid #eee; margin: 20px 0; }
+        .section { border: 1px solid #ddd; border-radius: 8px; padding: 20px; margin-bottom: 20px; }
     </style>
 </head>
 <body>
     <div class="container">
 )rawliteral";
 
+  html += "<h2>Voice Agent Settings</h2>";
   if (ap_mode) {
-    html += "<h2>Configure WiFi</h2><p>Connect this device to your WiFi network.</p>";
+    html += "<p>First, connect this device to your WiFi network.</p>";
   } else {
-    html += "<h2>Device Settings</h2><p>Device is connected to <b>" + WiFi.SSID() + "</b>.</p>";
+    html += "<p>Device is connected to <b>" + WiFi.SSID() + "</b>.</p>";
   }
+  
+  // --- WiFi Section ---
+  html += R"rawliteral(
+        <div class="section">
+            <h3>WiFi Network</h3>
+            <form action="/save" method="POST">
+                <div class="form-group">
+                    <label for="ssid">SSID</label>
+                    <input type="text" id="ssid" name="ssid" required>
+                </div>
+                <div class="form-group">
+                    <label for="pass">Password</label>
+                    <input type="password" id="pass" name="pass">
+                </div>
+                <button type="submit" class="btn">Save & Restart</button>
+            </form>
+            <hr>
+            <form action="/delete" method="POST" onsubmit="return confirm('Are you sure you want to delete saved credentials and restart into AP mode?');">
+                <button type="submit" class="btn btn-danger">Forget Current Network</button>
+            </form>
+        </div>
+)rawliteral";
+
+  // --- Agent Management Section ---
+  html += "<div class='section'><h3>Agent Management</h3><form action='/saveAgent' method='POST'>";
+
+  html += "<div class='form-group'><label for='sysPrompt'>System Prompt</label><textarea id='sysPrompt' name='sysPrompt' maxlength='2000' required>" + g_sys_instruction + "</textarea></div>";
+  html += "<div class='form-group'><label for='temp'>Temperature</label><input type='number' id='temp' name='temp' min='0.0' max='2.0' step='0.1' value='" + String(g_temperature, 2) + "' required></div>";
+  
+  String persist_checked = g_persist_conversation ? "checked" : "";
+  html += "<div class='form-group-inline'><input type='checkbox' id='persist' name='persist' value='true' " + persist_checked + "><label for='persist'>Persist Conversation</label></div>";
+  
+  String verbose_checked = g_verbose_logging ? "checked" : "";
+  html += "<div class='form-group-inline'><input type='checkbox' id='verbose' name='verbose' value='true' " + verbose_checked + "><label for='verbose'>Verbose Logging</label></div>";
+
+  html += "<br><button type='submit' class='btn'>Save Agent Settings</button>";
+  html += "</form><hr>";
 
   html += R"rawliteral(
-        <form action="/save" method="POST">
-            <h3>Change WiFi Network</h3>
-            <div class="form-group">
-                <label for="ssid">SSID</label>
-                <input type="text" id="ssid" name="ssid" required>
-            </div>
-            <div class="form-group">
-                <label for="pass">Password</label>
-                <input type="password" id="pass" name="pass">
-            </div>
-            <button type="submit" class="btn">Save & Restart</button>
-        </form>
-        <hr>
-        <form action="/delete" method="POST" onsubmit="return confirm('Are you sure you want to delete saved credentials and restart into AP mode?');">
-            <h3>Forget Current Network</h3>
-            <button type="submit" class="btn btn-danger">Delete Credentials & Restart</button>
+        <form action="/restoreAgent" method="POST" onsubmit="return confirm('Are you sure you want to restore default agent settings?');">
+            <button type="submit" class="btn btn-secondary">Restore Defaults</button>
         </form>
     </div>
-</body>
-</html>
 )rawliteral";
+
+  html += "</div></body></html>";
   server.send(200, "text/html", html);
 }
 
@@ -970,11 +1045,11 @@ void handle_save() {
     preferences.end();
 
     String html = R"rawliteral(
-<!DOCTYPE html><html><head><title>WiFi Config</title><meta name="viewport" content="width=device-width, initial-scale=1"><style>body{font-family:Arial,sans-serif;text-align:center;padding:40px;}.container{background-color:#fff;max-width:500px;margin:auto;padding:20px;border-radius:8px;box-shadow:0 2px 4px rgba(0,0,0,0.1);}</style></head>
-<body><div class="container"><h2>Credentials Saved!</h2><p>The device will now restart and try to connect to the new network.</p></div></body></html>
+<!DOCTYPE html><html><head><title>WiFi Config</title><meta http-equiv="refresh" content="3;url=/" /><meta name="viewport" content="width=device-width, initial-scale=1"><style>body{font-family:Arial,sans-serif;text-align:center;padding:40px;}.container{background-color:#fff;max-width:500px;margin:auto;padding:20px;border-radius:8px;box-shadow:0 2px 4px rgba(0,0,0,0.1);}</style></head>
+<body><div class="container"><h2>Credentials Saved!</h2><p>The device will now restart and try to connect. You will be redirected shortly.</p></div></body></html>
 )rawliteral";
     server.send(200, "text/html", html);
-
+    
     delay(2000);
     ESP.restart();
   } else {
@@ -983,25 +1058,70 @@ void handle_save() {
 }
 
 void handle_delete() {
-  CPRINTLN("Clearing credentials from NVS...");
-  preferences.begin("wifi-creds", false);
+    CPRINTLN("Clearing credentials from NVS...");
+    preferences.begin("wifi-creds", false);
+    preferences.clear();
+    preferences.end();
+
+    String html = R"rawliteral(
+<!DOCTYPE html><html><head><title>Credentials Deleted</title><meta http-equiv="refresh" content="3;url=/" /><meta name="viewport" content="width=device-width, initial-scale=1"><style>body{font-family:Arial,sans-serif;text-align:center;padding:40px;}.container{background-color:#fff;max-width:500px;margin:auto;padding:20px;border-radius:8px;box-shadow:0 2px 4px rgba(0,0,0,0.1);}</style></head>
+<body><div class="container"><h2>Credentials Deleted</h2><p>The device will now restart in Access Point mode. You will be redirected shortly.</p></div></body></html>
+)rawliteral";
+    server.send(200, "text/html", html);
+    
+    delay(2000);
+    ESP.restart();
+}
+
+void handle_save_agent() {
+  CPRINTLN("Saving agent configuration...");
+  preferences.begin("agentConfig", false);
+
+  g_sys_instruction = server.arg("sysPrompt");
+  g_temperature = server.arg("temp").toFloat();
+  g_persist_conversation = server.hasArg("persist");
+  g_verbose_logging = server.hasArg("verbose");
+
+  // Clamp values just in case
+  if (g_temperature < 0.0f) g_temperature = 0.0f;
+  if (g_temperature > 2.0f) g_temperature = 2.0f;
+  if (g_sys_instruction.length() > 2000) g_sys_instruction = g_sys_instruction.substring(0, 2000);
+
+  preferences.putString("sysPrompt", g_sys_instruction);
+  preferences.putFloat("temp", g_temperature);
+  preferences.putBool("persist", g_persist_conversation);
+  preferences.putBool("verbose", g_verbose_logging);
+  
+  preferences.end();
+  
+  CPRINTLN("Agent configuration saved.");
+  
+  // Redirect back to the root page
+  server.sendHeader("Location", "/", true);
+  server.send(302, "text/plain", "");
+}
+
+void handle_restore_agent() {
+  CPRINTLN("Restoring default agent configuration...");
+  preferences.begin("agentConfig", false);
   preferences.clear();
   preferences.end();
 
-  String html = R"rawliteral(
-<!DOCTYPE html><html><head><title>Credentials Deleted</title><meta name="viewport" content="width=device-width, initial-scale=1"><style>body{font-family:Arial,sans-serif;text-align:center;padding:40px;}.container{background-color:#fff;max-width:500px;margin:auto;padding:20px;border-radius:8px;box-shadow:0 2px 4px rgba(0,0,0,0.1);}</style></head>
-<body><div class="container"><h2>Credentials Deleted</h2><p>The device will now restart in Access Point mode.</p></div></body></html>
-)rawliteral";
-  server.send(200, "text/html", html);
+  // Reload the default values into the global variables
+  load_agent_config();
 
-  delay(2000);
-  ESP.restart();
+  // Redirect back to the root page
+  server.sendHeader("Location", "/", true);
+  server.send(302, "text/plain", "");
 }
 
 void setup_web_server() {
   server.on("/", HTTP_GET, handle_root);
   server.on("/save", HTTP_POST, handle_save);
   server.on("/delete", HTTP_POST, handle_delete);
+  server.on("/saveAgent", HTTP_POST, handle_save_agent);
+  server.on("/restoreAgent", HTTP_POST, handle_restore_agent);
+  
   server.onNotFound([]() {
     if (ap_mode) {
       server.send(302, "text/plain", "http://" + WiFi.softAPIP().toString());
@@ -1011,7 +1131,6 @@ void setup_web_server() {
   });
   server.begin();
 }
-
 
 // =====================================================================
 // WiFi + NTP init
@@ -1118,6 +1237,8 @@ void setup() {
   Serial.begin(115200);
   delay(500);
 
+  load_agent_config(); // Load agent settings from NVS
+
   pinMode(BUTTON_PIN, INPUT_PULLUP);
 
   // Legacy single-color LED (if present on GPIO39)
@@ -1206,6 +1327,11 @@ void loop() {
 
     if (dt >= LONG_PRESS_TIME) {
       CPRINTLN("\n=== BUTTON TRIGGERED ===");
+
+      if (!g_persist_conversation) {
+        CPRINTLN("Conversation persistence is off. Starting fresh.");
+        g_prev_response_id = "";
+      }
 
       record_audio();  // pink
 
