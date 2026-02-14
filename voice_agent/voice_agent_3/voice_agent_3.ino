@@ -1,4 +1,3 @@
-//TODO: start with sofAP to configure the "right internet"- remember to set a ".local adress"
 //TODO: create a configuration screen for:
 // - system prompt
 // - temperture
@@ -79,11 +78,25 @@
 #include <time.h>
 #include <ArduinoJson.h>
 
+// ADDED for WiFi Manager
+#include <Preferences.h>
+#include <WebServer.h>
+#include <DNSServer.h>
+#include <ESPmDNS.h>
+// END ADDED
+
 #include <Adafruit_NeoPixel.h>
 
 #include "config.h"
 #include "esp32-hal-psram.h"
 #include "driver/i2s.h"
+
+// ADDED for WiFi Manager
+Preferences preferences;
+WebServer server(80);
+DNSServer dnsServer;
+boolean ap_mode = false;
+// END ADDED
 
 // =====================================================================
 // TUNING (KNOBS)
@@ -117,14 +130,14 @@
 //   If true: keep the detailed debug prints (raw replies, headers, etc.).
 //   If false: print only core operational logs (milestones, errors, key outputs).
 //
-#define RECORD_SECONDS   3
-#define SAMPLE_RATE_OUT  24000
-#define MAX_TTS_SECONDS  15
+#define RECORD_SECONDS 3
+#define SAMPLE_RATE_OUT 24000
+#define MAX_TTS_SECONDS 15
 
 static const char* SYS_INSTRUCTION =
   "You are a helpful assistant. Answer in at most 2 short sentences suitable to be spoken aloud.";
 
-#define VERBOSE_LOGGING  true
+#define VERBOSE_LOGGING true
 
 // =====================================================================
 // SERIAL OUTPUT CONTROL
@@ -132,19 +145,37 @@ static const char* SYS_INSTRUCTION =
 #define SERIAL_ON true
 
 // Core logging (always shown when SERIAL_ON == true)
-#define CPRINT(x)    do { if (SERIAL_ON) Serial.print(x); } while (0)
-#define CPRINTLN(x)  do { if (SERIAL_ON) Serial.println(x); } while (0)
-#define CPRINTF(...) do { if (SERIAL_ON) Serial.printf(__VA_ARGS__); } while (0)
+#define CPRINT(x) \
+  do { \
+    if (SERIAL_ON) Serial.print(x); \
+  } while (0)
+#define CPRINTLN(x) \
+  do { \
+    if (SERIAL_ON) Serial.println(x); \
+  } while (0)
+#define CPRINTF(...) \
+  do { \
+    if (SERIAL_ON) Serial.printf(__VA_ARGS__); \
+  } while (0)
 
 // Verbose logging (only when VERBOSE_LOGGING == true)
-#define VPRINT(x)    do { if (SERIAL_ON && VERBOSE_LOGGING) Serial.print(x); } while (0)
-#define VPRINTLN(x)  do { if (SERIAL_ON && VERBOSE_LOGGING) Serial.println(x); } while (0)
-#define VPRINTF(...) do { if (SERIAL_ON && VERBOSE_LOGGING) Serial.printf(__VA_ARGS__); } while (0)
+#define VPRINT(x) \
+  do { \
+    if (SERIAL_ON && VERBOSE_LOGGING) Serial.print(x); \
+  } while (0)
+#define VPRINTLN(x) \
+  do { \
+    if (SERIAL_ON && VERBOSE_LOGGING) Serial.println(x); \
+  } while (0)
+#define VPRINTF(...) \
+  do { \
+    if (SERIAL_ON && VERBOSE_LOGGING) Serial.printf(__VA_ARGS__); \
+  } while (0)
 
 // ------------------------------
 // GENERAL PINS
 // ------------------------------
-const int LED_PIN = 39; // legacy single-color LED (if present on GPIO39)
+const int LED_PIN = 39;  // legacy single-color LED (if present on GPIO39)
 
 // Internal RGB NeoPixel LED (often GPIO 48 on ESP32-S3 dev boards)
 #ifndef STATUS_RGB_LED_PIN
@@ -158,13 +189,14 @@ Adafruit_NeoPixel statusPixel(STATUS_RGB_LED_COUNT, STATUS_RGB_LED_PIN, NEO_GRB 
 // STATUS STATE -> RGB COLOR
 // ------------------------------
 enum AssistantState : uint8_t {
-  STATE_WIFI_WAIT = 0,        // until WiFi ready = yellow
-  STATE_READY_FOR_INPUT,      // ready for input = green
-  STATE_RECORDING,            // recording audio = pink
-  STATE_STT,                  // STT = purple
-  STATE_RESPONSES_API,        // working with the responses API = blue
-  STATE_TTS_DOWNLOADING,      // downloading TTS = orange
-  STATE_TTS_PLAYING           // playing TTS = cyan
+  STATE_WIFI_WAIT = 0,    // until WiFi ready = yellow
+  STATE_WIFI_CONFIG,      // in config mode = flashing yellow
+  STATE_READY_FOR_INPUT,  // ready for input = green
+  STATE_RECORDING,        // recording audio = pink
+  STATE_STT,              // STT = purple
+  STATE_RESPONSES_API,    // working with the responses API = blue
+  STATE_TTS_DOWNLOADING,  // downloading TTS = orange
+  STATE_TTS_PLAYING       // playing TTS = cyan
 };
 
 static AssistantState g_state = STATE_WIFI_WAIT;
@@ -177,14 +209,15 @@ static inline void set_status_led_rgb(uint8_t r, uint8_t g, uint8_t b) {
 static inline void setAssistantState(AssistantState s) {
   g_state = s;
   switch (s) {
-    case STATE_WIFI_WAIT:        set_status_led_rgb(255, 255,   0); break; // yellow
-    case STATE_READY_FOR_INPUT:  set_status_led_rgb(  0, 255,   0); break; // green
-    case STATE_RECORDING:        set_status_led_rgb(255, 105, 180); break; // pink
-    case STATE_STT:              set_status_led_rgb(128,   0, 128); break; // purple
-    case STATE_RESPONSES_API:    set_status_led_rgb(  0,   0, 255); break; // blue
-    case STATE_TTS_DOWNLOADING:   set_status_led_rgb(255, 128,   0); break; // orange
-    case STATE_TTS_PLAYING:       set_status_led_rgb(  0, 255, 255); break; // cyan    
-    default:                     set_status_led_rgb(  0,   0,   0); break; // off
+    case STATE_WIFI_WAIT: set_status_led_rgb(255, 255, 0); break;        // yellow
+    case STATE_WIFI_CONFIG: /* handled in loop for flashing */ break;    // flashing yellow
+    case STATE_READY_FOR_INPUT: set_status_led_rgb(0, 255, 0); break;    // green
+    case STATE_RECORDING: set_status_led_rgb(255, 105, 180); break;      // pink
+    case STATE_STT: set_status_led_rgb(128, 0, 128); break;              // purple
+    case STATE_RESPONSES_API: set_status_led_rgb(0, 0, 255); break;      // blue
+    case STATE_TTS_DOWNLOADING: set_status_led_rgb(255, 128, 0); break;  // orange
+    case STATE_TTS_PLAYING: set_status_led_rgb(0, 255, 255); break;      // cyan
+    default: set_status_led_rgb(0, 0, 0); break;                         // off
   }
 }
 
@@ -211,8 +244,8 @@ const char* ntpServer = "pool.ntp.org";
 
 // INMP441 I2S pinout (ESP32-S3)
 static const gpio_num_t I2S_SCK_IN = GPIO_NUM_42;  // BCLK
-static const gpio_num_t I2S_WS_IN  = GPIO_NUM_41;  // LRCLK
-static const gpio_num_t I2S_SD_IN  = GPIO_NUM_40;  // DOUT from mic
+static const gpio_num_t I2S_WS_IN = GPIO_NUM_41;   // LRCLK
+static const gpio_num_t I2S_SD_IN = GPIO_NUM_40;   // DOUT from mic
 
 // ------------------------------
 // MAX98357A I2S TX pins
@@ -224,11 +257,11 @@ static const gpio_num_t I2S_DOUT_OUT = GPIO_NUM_17;
 // ------------------------------
 // TTS FULL-BUFFER SETTINGS (PSRAM)
 // ------------------------------
-#define TTS_BYTES_PER_SEC (SAMPLE_RATE_OUT * 2)   // 16-bit mono = 2 bytes/sample
+#define TTS_BYTES_PER_SEC (SAMPLE_RATE_OUT * 2)  // 16-bit mono = 2 bytes/sample
 #define MAX_TTS_BYTES (MAX_TTS_SECONDS * TTS_BYTES_PER_SEC)
 
 uint8_t* tts_pcm_buf = nullptr;
-size_t   tts_pcm_len = 0;
+size_t tts_pcm_len = 0;
 
 // ------------------------------
 // GLOBAL AUDIO BUFFERS (PSRAM)
@@ -245,7 +278,8 @@ String g_prev_response_id = "";
 // Small helper: inline NOP for short press
 // ------------------------------
 static inline void do_nop() {
-  __asm__ __volatile__("nop" ::: "memory");
+  __asm__ __volatile__("nop" ::
+                         : "memory");
 }
 
 // =====================================================================
@@ -288,7 +322,7 @@ void print_openai_json_error_if_any(const String& body, const char* tag) {
     return;
   }
 
-  const char* msg  = doc["error"]["message"] | "";
+  const char* msg = doc["error"]["message"] | "";
   const char* type = doc["error"]["type"] | "";
   const char* code = doc["error"]["code"] | "";
 
@@ -301,8 +335,8 @@ void print_openai_json_error_if_any(const String& body, const char* tag) {
 // Helper: Extract assistant text and response.id from Responses API JSON
 // =====================================================================
 bool parse_responses_api_text_and_id(const String& json,
-                                    String& out_text,
-                                    String& out_id) {
+                                     String& out_text,
+                                     String& out_id) {
   out_text = "";
   out_id = "";
 
@@ -403,8 +437,8 @@ void create_wav_header(uint8_t* h, uint32_t data_size, uint32_t sample_rate) {
 
   memcpy(h + 12, "fmt ", 4);
   write_u32_le(h + 16, 16);
-  write_u16_le(h + 20, 1);   // PCM
-  write_u16_le(h + 22, 1);   // mono
+  write_u16_le(h + 20, 1);  // PCM
+  write_u16_le(h + 22, 1);  // mono
   write_u32_le(h + 24, sample_rate);
   write_u32_le(h + 28, sample_rate * 2);
   write_u16_le(h + 32, 2);
@@ -529,18 +563,18 @@ String openai_transcribe() {
 
   String part_file_header =
     "--" + boundary + "\r\n"
-    "Content-Disposition: form-data; name=\"file\"; filename=\"audio.wav\"\r\n"
-    "Content-Type: audio/wav\r\n\r\n";
+                      "Content-Disposition: form-data; name=\"file\"; filename=\"audio.wav\"\r\n"
+                      "Content-Type: audio/wav\r\n\r\n";
 
   String part_model =
     "\r\n--" + boundary + "\r\n"
-    "Content-Disposition: form-data; name=\"model\"\r\n\r\n"
-    "gpt-4o-mini-transcribe\r\n";
+                          "Content-Disposition: form-data; name=\"model\"\r\n\r\n"
+                          "gpt-4o-mini-transcribe\r\n";
 
   String part_respfmt =
     "--" + boundary + "\r\n"
-    "Content-Disposition: form-data; name=\"response_format\"\r\n\r\n"
-    "text\r\n";
+                      "Content-Disposition: form-data; name=\"response_format\"\r\n\r\n"
+                      "text\r\n";
 
   String part_end =
     "--" + boundary + "--\r\n";
@@ -552,12 +586,7 @@ String openai_transcribe() {
   const int pcm_size = NUM_SAMPLES * 2;
 
   int content_len =
-    (int)part_file_header.length() +
-    wav_header_size +
-    pcm_size +
-    (int)part_model.length() +
-    (int)part_respfmt.length() +
-    (int)part_end.length();
+    (int)part_file_header.length() + wav_header_size + pcm_size + (int)part_model.length() + (int)part_respfmt.length() + (int)part_end.length();
 
   client.print("POST /v1/audio/transcriptions HTTP/1.1\r\n");
   client.print("Host: api.openai.com\r\n");
@@ -600,7 +629,7 @@ String openai_transcribe() {
   if (sp1 >= 0) {
     int sp2 = statusLine.indexOf(' ', sp1 + 1);
     if (sp2 >= 0) httpStatus = statusLine.substring(sp1 + 1, sp2).toInt();
-    else          httpStatus = statusLine.substring(sp1 + 1).toInt();
+    else httpStatus = statusLine.substring(sp1 + 1).toInt();
   }
 
   // Read headers (discard)
@@ -768,7 +797,7 @@ void openai_tts_play(const String& text) {
   if (sp1 >= 0) {
     int sp2 = statusLine.indexOf(' ', sp1 + 1);
     if (sp2 >= 0) httpStatus = statusLine.substring(sp1 + 1, sp2).toInt();
-    else          httpStatus = statusLine.substring(sp1 + 1).toInt();
+    else httpStatus = statusLine.substring(sp1 + 1).toInt();
   }
 
   // Read headers (verbose)
@@ -836,7 +865,7 @@ void openai_tts_play(const String& text) {
   CPRINTF("TTS: Buffered %u bytes (max %u). Playing...\n",
           (unsigned)tts_pcm_len, (unsigned)MAX_TTS_BYTES);
   setAssistantState(STATE_TTS_PLAYING);
-  
+
   size_t played = 0;
   while (played < tts_pcm_len) {
     size_t toWrite = tts_pcm_len - played;
@@ -852,20 +881,165 @@ void openai_tts_play(const String& text) {
 }
 
 // =====================================================================
+// WIFI / SoftAP / NVS
+// =====================================================================
+
+void start_soft_ap() {
+  ap_mode = true;
+  setAssistantState(STATE_WIFI_CONFIG);
+
+  uint8_t mac[6];
+  char ap_ssid[18];
+  WiFi.macAddress(mac);
+  snprintf(ap_ssid, sizeof(ap_ssid), "VOICE-AGENT-%02X%02X", mac[4], mac[5]);
+
+  CPRINTLN("Starting SoftAP with SSID: " + String(ap_ssid));
+  WiFi.softAP(ap_ssid);
+  delay(100);
+  IPAddress ap_ip = WiFi.softAPIP();
+  CPRINTLN("AP IP address: " + ap_ip.toString());
+
+  dnsServer.start(53, "*", ap_ip);
+}
+
+void handle_root() {
+  String html = R"rawliteral(
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Voice Agent - WiFi Config</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        body { font-family: Arial, sans-serif; background-color: #f4f4f4; margin: 0; padding: 20px; }
+        .container { background-color: #fff; max-width: 500px; margin: auto; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        h2, h3 { color: #333; }
+        .form-group { margin-bottom: 15px; }
+        label { display: block; margin-bottom: 5px; font-weight: bold; }
+        input[type="text"], input[type="password"] { width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px; box-sizing: border-box; }
+        .btn { background-color: #007bff; color: white; padding: 10px 15px; border: none; border-radius: 4px; cursor: pointer; font-size: 16px; width: 100%; box-sizing: border-box; }
+        .btn:hover { background-color: #0056b3; }
+        .btn-danger { background-color: #dc3545; }
+        .btn-danger:hover { background-color: #c82333; }
+        hr { border: 0; border-top: 1px solid #eee; margin: 20px 0; }
+    </style>
+</head>
+<body>
+    <div class="container">
+)rawliteral";
+
+  if (ap_mode) {
+    html += "<h2>Configure WiFi</h2><p>Connect this device to your WiFi network.</p>";
+  } else {
+    html += "<h2>Device Settings</h2><p>Device is connected to <b>" + WiFi.SSID() + "</b>.</p>";
+  }
+
+  html += R"rawliteral(
+        <form action="/save" method="POST">
+            <h3>Change WiFi Network</h3>
+            <div class="form-group">
+                <label for="ssid">SSID</label>
+                <input type="text" id="ssid" name="ssid" required>
+            </div>
+            <div class="form-group">
+                <label for="pass">Password</label>
+                <input type="password" id="pass" name="pass">
+            </div>
+            <button type="submit" class="btn">Save & Restart</button>
+        </form>
+        <hr>
+        <form action="/delete" method="POST" onsubmit="return confirm('Are you sure you want to delete saved credentials and restart into AP mode?');">
+            <h3>Forget Current Network</h3>
+            <button type="submit" class="btn btn-danger">Delete Credentials & Restart</button>
+        </form>
+    </div>
+</body>
+</html>
+)rawliteral";
+  server.send(200, "text/html", html);
+}
+
+void handle_save() {
+  String ssid = server.arg("ssid");
+  String pass = server.arg("pass");
+
+  if (ssid.length() > 0) {
+    CPRINTLN("Saving credentials to NVS...");
+    preferences.begin("wifi-creds", false);
+    preferences.putString("ssid", ssid);
+    preferences.putString("pass", pass);
+    preferences.end();
+
+    String html = R"rawliteral(
+<!DOCTYPE html><html><head><title>WiFi Config</title><meta name="viewport" content="width=device-width, initial-scale=1"><style>body{font-family:Arial,sans-serif;text-align:center;padding:40px;}.container{background-color:#fff;max-width:500px;margin:auto;padding:20px;border-radius:8px;box-shadow:0 2px 4px rgba(0,0,0,0.1);}</style></head>
+<body><div class="container"><h2>Credentials Saved!</h2><p>The device will now restart and try to connect to the new network.</p></div></body></html>
+)rawliteral";
+    server.send(200, "text/html", html);
+
+    delay(2000);
+    ESP.restart();
+  } else {
+    server.send(400, "text/plain", "Bad Request: SSID cannot be empty.");
+  }
+}
+
+void handle_delete() {
+  CPRINTLN("Clearing credentials from NVS...");
+  preferences.begin("wifi-creds", false);
+  preferences.clear();
+  preferences.end();
+
+  String html = R"rawliteral(
+<!DOCTYPE html><html><head><title>Credentials Deleted</title><meta name="viewport" content="width=device-width, initial-scale=1"><style>body{font-family:Arial,sans-serif;text-align:center;padding:40px;}.container{background-color:#fff;max-width:500px;margin:auto;padding:20px;border-radius:8px;box-shadow:0 2px 4px rgba(0,0,0,0.1);}</style></head>
+<body><div class="container"><h2>Credentials Deleted</h2><p>The device will now restart in Access Point mode.</p></div></body></html>
+)rawliteral";
+  server.send(200, "text/html", html);
+
+  delay(2000);
+  ESP.restart();
+}
+
+void setup_web_server() {
+  server.on("/", HTTP_GET, handle_root);
+  server.on("/save", HTTP_POST, handle_save);
+  server.on("/delete", HTTP_POST, handle_delete);
+  server.onNotFound([]() {
+    if (ap_mode) {
+      server.send(302, "text/plain", "http://" + WiFi.softAPIP().toString());
+    } else {
+      server.send(404, "text/plain", "Not Found");
+    }
+  });
+  server.begin();
+}
+
+
+// =====================================================================
 // WiFi + NTP init
 // =====================================================================
 void init_wifi_and_time() {
   setAssistantState(STATE_WIFI_WAIT);
-
   CPRINTLN("=== WiFi INIT ===");
+
   WiFi.mode(WIFI_STA);
   WiFi.disconnect(true, true);
-  delay(300);
+  delay(100);
 
-  CPRINT("Connecting to: ");
-  CPRINTLN(WIFI_SSID);
+  preferences.begin("wifi-creds", true);  // read-only
+  String ssid = preferences.getString("ssid", "");
+  String pass = preferences.getString("pass", "");
+  preferences.end();
 
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  bool connected = false;
+  if (ssid.length() == 0) {
+    CPRINTLN("NVS empty...");
+  } else {
+    CPRINTLN("Found credentials in NVS. Trying to connect...");
+  }
+
+  CPRINT("SSID: ");
+  CPRINTLN(ssid);
+
+  WiFi.begin(ssid.c_str(), pass.c_str());
 
   unsigned long startAttempt = millis();
   while (WiFi.status() != WL_CONNECTED && millis() - startAttempt < 15000) {
@@ -873,19 +1047,49 @@ void init_wifi_and_time() {
     delay(500);
   }
 
-  if (WiFi.status() != WL_CONNECTED) {
-    CPRINTLN("\nWiFi FAILED on first attempt. Retrying...");
-    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-    while (WiFi.status() != WL_CONNECTED) {
-      CPRINT("+");
-      delay(500);
+  if (WiFi.status() == WL_CONNECTED) {
+    connected = true;
+  } else {
+    CPRINTLN("\nConnection failed.");
+    // If we failed with NVS credentials, clear them.
+    if (preferences.isKey("ssid")) {
+      CPRINTLN("Clearing invalid credentials from NVS.");
+      preferences.begin("wifi-creds", false);
+      preferences.clear();
+      preferences.end();
     }
+  }
+
+  if (!connected) {
+    WiFi.mode(WIFI_AP_STA);
+    start_soft_ap();
+    setup_web_server();
+    // Loop will handle server clients. Execution will pause here until configured.
+    return;
   }
 
   CPRINTLN("\nWiFi OK!");
   CPRINT("IP: ");
   CPRINTLN(WiFi.localIP());
+
+  // ADDED for mDNS
+  uint8_t mac[6];
+  char hostname[18];
+  WiFi.macAddress(mac);
+  snprintf(hostname, sizeof(hostname), "voice-agent-%02x%02x", mac[4], mac[5]);
+
+  if (MDNS.begin(hostname)) {
+    CPRINT("mDNS responder started. Hostname: http://");
+    CPRINT(hostname);
+    CPRINTLN(".local");
+  } else {
+    CPRINTLN("Error setting up MDNS responder!");
+  }
+  // END ADDED
+
   CPRINTLN("=====================");
+
+  setup_web_server();  // Also start server in STA mode
 
   CPRINTLN("Syncing time via NTP...");
   configTime(0, 0, ntpServer, "time.nist.gov", "time.google.com");
@@ -904,7 +1108,6 @@ void init_wifi_and_time() {
     VPRINTF("Time synced: %s\n", ctime(&now));
   }
 
-  // WiFi ready => green (ready for input)
   setAssistantState(STATE_READY_FOR_INPUT);
 }
 
@@ -924,7 +1127,7 @@ void setup() {
   // NeoPixel internal RGB LED
   statusPixel.begin();
   statusPixel.setBrightness(64);
-  set_status_led_rgb(0, 0, 0);   // off
+  set_status_led_rgb(0, 0, 0);  // off
   setAssistantState(STATE_WIFI_WAIT);
 
   CPRINTLN("Allocating PSRAM buffers...");
@@ -935,7 +1138,7 @@ void setup() {
 
   if (!raw_buf || !pcm_buf || !tts_pcm_buf) {
     CPRINTLN("PSRAM allocation failed!");
-    set_status_led_rgb(255, 0, 0); // red
+    set_status_led_rgb(255, 0, 0);  // red
     while (true) delay(1000);
   }
 
@@ -946,14 +1149,33 @@ void setup() {
   setup_i2s_mic();
   setup_i2s_speaker();
 
-  CPRINTLN("Ready. Long press button to ask a question.");
-  setAssistantState(STATE_READY_FOR_INPUT);
+  if (false == ap_mode) {
+    CPRINTLN("Ready. Long press button to ask a question.");
+    setAssistantState(STATE_READY_FOR_INPUT);
+  }
 }
 
 // =====================================================================
 // LOOP: wait for long press, then run full pipeline
 // =====================================================================
 void loop() {
+  if (ap_mode) {
+    dnsServer.processNextRequest();
+
+    // Flash yellow LED in config mode
+    if ((millis() / 500) % 2 == 0) {
+      set_status_led_rgb(255, 255, 0);  // yellow
+    } else {
+      set_status_led_rgb(0, 0, 0);  // off
+    }
+  }
+
+  server.handleClient();  // Always run the web server
+
+  if (ap_mode) {
+    return;  // Block assistant logic while in AP mode
+  }
+
   // Keep legacy single-color LED as a simple "idle indicator":
   // ON when ready for input, OFF otherwise.
   if (g_state == STATE_READY_FOR_INPUT) {
@@ -985,28 +1207,27 @@ void loop() {
     if (dt >= LONG_PRESS_TIME) {
       CPRINTLN("\n=== BUTTON TRIGGERED ===");
 
-      record_audio(); // pink
+      record_audio();  // pink
 
-      String question = openai_transcribe(); // purple
+      String question = openai_transcribe();  // purple
       if (question.length() == 0) {
         CPRINTLN("No question received from STT.");
         setAssistantState(STATE_READY_FOR_INPUT);
         return;
       }
 
-      String answer = openai_answer_responses(question); // blue
+      String answer = openai_answer_responses(question);  // blue
       if (answer.length() == 0) {
         CPRINTLN("No answer from Responses API.");
         setAssistantState(STATE_READY_FOR_INPUT);
         return;
       }
 
-      openai_tts_play(answer); // orange
+      openai_tts_play(answer);  // orange
 
-      setAssistantState(STATE_READY_FOR_INPUT); // green
+      setAssistantState(STATE_READY_FOR_INPUT);  // green
     } else {
       do_nop();
     }
   }
 }
-
