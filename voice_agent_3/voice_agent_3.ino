@@ -1,9 +1,4 @@
-//TODO: create a configuration screen for:
-// - system prompt
-// - temperture
-// - persist conversation
-//-  verbose logging
-//TODO: show the last three messages
+//TODO?: show the last three messages
 
 
 
