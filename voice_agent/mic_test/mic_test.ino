@@ -8,17 +8,40 @@
  * - ESP32 development board
  * - INMP441 I2S microphone
  *
- * Wiring (see config.h for pin definitions):
- * - INMP441 SD  -> GPIO 4
- * - INMP441 WS  -> GPIO 17
- * - INMP441 SCK -> GPIO 18
- * - INMP441 VDD -> 3.3V
- * - INMP441 GND -> GND
- * - INMP441 L/R -> GND (for left channel)
+ * INMP441 Microphone (I2S RX)
+ *   - SD   -> GPIO 40
+ *   - VDD  -> 3V
+ *   - GND  -> GND
+ *   - L/R  -> GND (left channel)
+ *   - WS   -> GPIO 41
+ *   - SCK  -> GPIO 42
+ * 
+ *   - if you have an amplifier connected, connect the SD (shutdown) to ground
  */
 
 #include <driver/i2s.h>
-#include "../config.h"
+
+// INMP441 Microphone (I2S Input)
+#define I2S_MIC_SD_PIN 40      // Serial Data
+#define I2S_MIC_WS_PIN 41     // Word Select
+#define I2S_MIC_SCK_PIN 42    // Serial Clock
+
+
+
+// Sample Rates
+#define MIC_SAMPLE_RATE 16000    // 16kHz for Whisper API
+#define SPK_SAMPLE_RATE 24000    // 24kHz for TTS output
+
+// Buffer Sizes
+#define INPUT_BUFFER_SIZE 131072     // 128KB for microphone capture (8 seconds at 16kHz)
+#define OUTPUT_BUFFER_SIZE 262144    // 256KB for TTS streaming
+#define DMA_BUFFER_COUNT 8
+#define DMA_BUFFER_SIZE 1024
+
+// Serial Debug
+#define SERIAL_BAUD_RATE 115200
+
+
 
 // I2S port number
 #define I2S_PORT I2S_NUM_0
