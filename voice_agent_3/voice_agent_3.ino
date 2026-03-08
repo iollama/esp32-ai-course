@@ -655,7 +655,10 @@ String openai_transcribe() {
   // Read body
   String body;
   while (client.connected() || client.available()) {
-    while (client.available()) body += (char)client.read();
+    while (client.available()) {
+      int b = client.read();
+      if (b >= 0) body += (char)b;
+    }
     delay(1);
   }
 
@@ -834,7 +837,10 @@ void openai_tts_play(const String& text) {
     String errBody;
     unsigned long t0 = millis();
     while ((client.connected() || client.available()) && (millis() - t0 < 7000)) {
-      while (client.available()) errBody += (char)client.read();
+      while (client.available()) {
+        int b = client.read();
+        if (b >= 0) body += (char)b;
+      }
       delay(1);
     }
     print_openai_json_error_if_any(errBody, "TTS");
