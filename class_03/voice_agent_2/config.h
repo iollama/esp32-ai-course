@@ -1,6 +1,11 @@
 #ifndef CONFIG_H
 #define CONFIG_H
 
+/* ************************************************************************
+   udi\keys.h contains my home network and OPENAI keys. 
+   you will not have this file. Remove the include line and put the
+   relevant network  andopenai keys.
+/* ************************************************************************/
 
 #include "C:\Users\udi\keys.h"  
 // =====================================
