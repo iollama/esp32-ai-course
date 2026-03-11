@@ -152,6 +152,8 @@ String g_sys_instruction;
 float  g_temperature;
 bool   g_persist_conversation;
 bool   g_verbose_logging;
+String g_api_key;   // NVS-stored API key; empty = use compiled OPENAI_API_KEY
+int    g_volume = 100;  // 0–100, persisted in NVS
 
 // =====================================================================
 // SERIAL OUTPUT CONTROL
@@ -294,6 +296,13 @@ String g_prev_response_id = "";
 static inline void do_nop() {
   __asm__ __volatile__("nop" ::
                          : "memory");
+}
+
+// =====================================================================
+// Helper: get active API key (NVS or compiled default)
+// =====================================================================
+String get_api_key() {
+  return (g_api_key.length() > 0) ? g_api_key : String(OPENAI_API_KEY);
 }
 
 // =====================================================================
@@ -604,7 +613,7 @@ String openai_transcribe() {
 
   client.print("POST /v1/audio/transcriptions HTTP/1.1\r\n");
   client.print("Host: api.openai.com\r\n");
-  client.print("Authorization: Bearer " + String(OPENAI_API_KEY) + "\r\n");
+  client.print("Authorization: Bearer " + get_api_key() + "\r\n");
   client.print("Content-Type: multipart/form-data; boundary=" + boundary + "\r\n");
   client.print("Content-Length: " + String(content_len) + "\r\n");
   client.print("Connection: close\r\n\r\n");
@@ -722,7 +731,7 @@ String openai_answer_responses(const String& question) {
 
   http.setTimeout(20000);
   http.addHeader("Content-Type", "application/json");
-  http.addHeader("Authorization", "Bearer " + String(OPENAI_API_KEY));
+  http.addHeader("Authorization", "Bearer " + get_api_key());
 
   int httpCode = http.POST((uint8_t*)body.c_str(), body.length());
   String reply = http.getString();
@@ -796,7 +805,7 @@ void openai_tts_play(const String& text) {
 
   client.print("POST /v1/audio/speech HTTP/1.1\r\n");
   client.print("Host: api.openai.com\r\n");
-  client.print("Authorization: Bearer " + String(OPENAI_API_KEY) + "\r\n");
+  client.print("Authorization: Bearer " + get_api_key() + "\r\n");
   client.print("Content-Type: application/json\r\n");
   client.print("Content-Length: " + String(body.length()) + "\r\n");
   client.print("Connection: close\r\n\r\n");
@@ -889,6 +898,17 @@ void openai_tts_play(const String& text) {
 
   CPRINTF("TTS: Buffered %u bytes (max %u). Playing...\n",
           (unsigned)tts_pcm_len, (unsigned)MAX_TTS_BYTES);
+
+  // Apply software volume scaling
+  if (g_volume < 100) {
+    int16_t* samples = (int16_t*)tts_pcm_buf;
+    size_t num_samples = tts_pcm_len / 2;
+    for (size_t i = 0; i < num_samples; i++) {
+      samples[i] = (int16_t)(((int32_t)samples[i] * g_volume) / 100);
+    }
+    CPRINTF("TTS: Volume scaled to %d%%\n", g_volume);
+  }
+
   setAssistantState(STATE_TTS_PLAYING);
 
   size_t played = 0;
@@ -915,6 +935,10 @@ void load_agent_config() {
   g_temperature = preferences.getFloat("temp", DEFAULT_TEMPERATURE);
   g_persist_conversation = preferences.getBool("persist", DEFAULT_PERSIST_CONVO);
   g_verbose_logging = preferences.getBool("verbose", DEFAULT_VERBOSE_LOGGING);
+  g_api_key = preferences.getString("apiKey", "");
+  g_volume = preferences.getInt("volume", 100);
+  if (g_volume < 0) g_volume = 0;
+  if (g_volume > 100) g_volume = 100;
 
   preferences.end();
 
@@ -923,6 +947,8 @@ void load_agent_config() {
   CPRINTF("Temperature: %.2f\n", g_temperature);
   CPRINTF("Persist Convo: %s\n", g_persist_conversation ? "true" : "false");
   CPRINTF("Verbose Logs: %s\n", g_verbose_logging ? "true" : "false");
+  CPRINTF("API Key: %s\n", g_api_key.length() > 0 ? "custom (NVS)" : "default (compiled)");
+  CPRINTF("Volume: %d%%\n", g_volume);
   CPRINTLN("---------------------------");
 }
 
@@ -1030,6 +1056,32 @@ void handle_root() {
     </div>
 )rawliteral";
 
+  // --- API Key Section ---
+  html += "<div class='section'><h3>OpenAI API Key</h3>";
+  html += "<p>Status: <b>" + String(g_api_key.length() > 0 ? "Custom key is set" : "Using default key") + "</b></p>";
+  html += R"rawliteral(
+        <form action="/saveApiKey" method="POST">
+            <div class="form-group">
+                <label for="apiKey">New API Key</label>
+                <input type="password" id="apiKey" name="apiKey" placeholder="sk-..." required>
+            </div>
+            <button type="submit" class="btn">Save API Key</button>
+        </form>
+        <hr>
+        <form action="/clearApiKey" method="POST" onsubmit="return confirm('Clear saved key and revert to the compiled default?');">
+            <button type="submit" class="btn btn-secondary">Clear Saved Key</button>
+        </form>
+    </div>
+)rawliteral";
+
+  // --- Volume Section ---
+  html += "<div class='section'><h3>Volume</h3>";
+  html += "<form action='/saveVolume' method='POST'>";
+  html += "<div class='form-group'><label for='volume'>Playback Volume: <span id='volVal'>" + String(g_volume) + "</span>%</label>";
+  html += "<input type='range' id='volume' name='volume' min='0' max='100' value='" + String(g_volume) + "' oninput=\"document.getElementById('volVal').textContent=this.value\"></div>";
+  html += "<button type='submit' class='btn'>Save Volume</button>";
+  html += "</form></div>";
+
   html += "</div></body></html>";
   server.send(200, "text/html", html);
 }
@@ -1116,13 +1168,55 @@ void handle_restore_agent() {
   server.send(302, "text/plain", "");
 }
 
+void handle_save_api_key() {
+  String key = server.arg("apiKey");
+  if (key.length() > 0) {
+    CPRINTLN("Saving API key to NVS...");
+    preferences.begin("agentConfig", false);
+    preferences.putString("apiKey", key);
+    preferences.end();
+    g_api_key = key;
+    CPRINTLN("API key saved.");
+  }
+  server.sendHeader("Location", "/", true);
+  server.send(302, "text/plain", "");
+}
+
+void handle_clear_api_key() {
+  CPRINTLN("Clearing saved API key from NVS...");
+  preferences.begin("agentConfig", false);
+  preferences.remove("apiKey");
+  preferences.end();
+  g_api_key = "";
+  CPRINTLN("API key cleared. Using compiled default.");
+  server.sendHeader("Location", "/", true);
+  server.send(302, "text/plain", "");
+}
+
+void handle_save_volume() {
+  g_volume = server.arg("volume").toInt();
+  if (g_volume < 0) g_volume = 0;
+  if (g_volume > 100) g_volume = 100;
+
+  CPRINTF("Saving volume: %d%%\n", g_volume);
+  preferences.begin("agentConfig", false);
+  preferences.putInt("volume", g_volume);
+  preferences.end();
+
+  server.sendHeader("Location", "/", true);
+  server.send(302, "text/plain", "");
+}
+
 void setup_web_server() {
   server.on("/", HTTP_GET, handle_root);
   server.on("/save", HTTP_POST, handle_save);
   server.on("/delete", HTTP_POST, handle_delete);
   server.on("/saveAgent", HTTP_POST, handle_save_agent);
   server.on("/restoreAgent", HTTP_POST, handle_restore_agent);
-  
+  server.on("/saveApiKey", HTTP_POST, handle_save_api_key);
+  server.on("/clearApiKey", HTTP_POST, handle_clear_api_key);
+  server.on("/saveVolume", HTTP_POST, handle_save_volume);
+
   server.onNotFound([]() {
     if (ap_mode) {
       server.send(302, "text/plain", "http://" + WiFi.softAPIP().toString());
