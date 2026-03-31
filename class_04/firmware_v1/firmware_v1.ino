@@ -29,24 +29,45 @@ void performOTA(const char* url) {
   HTTPClient http;
   http.begin(url);
   int httpCode = http.GET();
+  Serial.println("HTTP response code: " + String(httpCode));
 
   if (httpCode == 200) {
     int contentLength = http.getSize();
+    Serial.println("Content length: " + String(contentLength));
+
+    if (contentLength <= 0) {
+      Serial.println("Invalid content length!");
+      return;
+    }
+
     WiFiClient* stream = http.getStreamPtr();
-    if (Update.begin(contentLength)) {
-      Update.writeStream(*stream);
-      if (Update.end() && Update.isFinished()) {
+
+    if (!Update.begin(contentLength)) {
+      Serial.println("Not enough space for OTA!");
+      Update.printError(Serial);
+      return;
+    }
+
+    size_t written = Update.writeStream(*stream);
+    Serial.println("Written: " + String(written) + " / " + String(contentLength));
+
+    if (Update.end()) {
+      if (Update.isFinished()) {
         Serial.println("OTA Success! Rebooting...");
         ESP.restart();
       } else {
-        Serial.println("OTA Failed.");
+        Serial.println("OTA not finished!");
       }
+    } else {
+      Serial.print("OTA Error: ");
+      Update.printError(Serial);
     }
   } else {
     Serial.println("HTTP Error: " + String(httpCode));
   }
   http.end();
 }
+
 
 void loop() {
   // Blink VERSION times
