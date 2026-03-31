@@ -98,6 +98,7 @@ void loop() {
 
 void setup() {
   Serial.begin(115200);
+  Serial.setTxTimeoutMs(0);
   delay(3000); 
 
   pinMode(LED_PIN, OUTPUT);
