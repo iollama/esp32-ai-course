@@ -189,6 +189,20 @@ public:
 PSRAMRingBuffer* in_ring_buf = nullptr;
 PSRAMRingBuffer* out_ring_buf = nullptr;
 
+// =====================================================================
+// PRE-ALLOCATED AUDIO BUFFERS (avoids heap fragmentation)
+// =====================================================================
+// Encode: ceil(2048 * 4/3) + 4 = 2736 bytes
+#define AUDIO_CHUNK_SIZE    2048
+#define B64_CHUNK_SIZE      2736
+#define WS_FRAME_SIZE       2800   // prefix(46) + b64(2732) + suffix+null(3)
+#define AUDIO_DECODE_SIZE   49152  // 48KB — covers largest expected audio delta
+
+static uint8_t  s_mic_chunk[AUDIO_CHUNK_SIZE];
+static char     s_b64_buf[B64_CHUNK_SIZE];
+static char     s_ws_frame[WS_FRAME_SIZE];
+static uint8_t* s_decode_buf = nullptr;  // PSRAM, allocated in setup()
+
 // Inter-Task Communication Flags
 volatile bool cmd_cancel = false;
 volatile bool cmd_commit = false;
@@ -227,16 +241,15 @@ String jsonEscape(const String& s) {
   return out;
 }
 
-String encodeBase64(const uint8_t* data, size_t length) {
-    size_t olen = 0;
-    mbedtls_base64_encode(NULL, 0, &olen, data, length);
-    if (olen == 0) return "";
-    unsigned char* buf = (unsigned char*)malloc(olen);
-    if (!buf) return "";
-    mbedtls_base64_encode(buf, olen, &olen, data, length);
-    String encoded = String((const char*)buf);
-    free(buf);
-    return encoded;
+// Encode audio chunk into s_b64_buf/s_ws_frame and send via wsClient.
+// Uses only pre-allocated static buffers — no heap allocation.
+static void sendAudioChunk(websockets::WebsocketsClient& ws, const uint8_t* data, size_t len) {
+    size_t b64_len = 0;
+    mbedtls_base64_encode((unsigned char*)s_b64_buf, B64_CHUNK_SIZE, &b64_len, data, len);
+    s_b64_buf[b64_len] = '\0';
+    snprintf(s_ws_frame, WS_FRAME_SIZE,
+             "{\"type\":\"input_audio_buffer.append\",\"audio\":\"%s\"}", s_b64_buf);
+    ws.send(s_ws_frame);
 }
 
 // =====================================================================
@@ -314,14 +327,11 @@ void manage_websockets() {
                 String b64 = payload.substring(audioStart, audioEnd);
                 size_t olen = 0;
                 mbedtls_base64_decode(NULL, 0, &olen, (const unsigned char*)b64.c_str(), b64.length());
-                if (olen > 0) {
-                    uint8_t* buf = (uint8_t*)malloc(olen);
-                    if (buf) {
-                        mbedtls_base64_decode(buf, olen, &olen, (const unsigned char*)b64.c_str(), b64.length());
-                        out_ring_buf->write(buf, olen);
-                        free(buf);
-                        VPRINTF("WS: Decoded and buffered %d bytes of audio\n", olen);
-                    }
+                if (olen > 0 && olen <= AUDIO_DECODE_SIZE && s_decode_buf) {
+                    mbedtls_base64_decode(s_decode_buf, AUDIO_DECODE_SIZE, &olen,
+                                         (const unsigned char*)b64.c_str(), b64.length());
+                    out_ring_buf->write(s_decode_buf, olen);
+                    VPRINTF("WS: Decoded and buffered %d bytes of audio\n", olen);
                 }
             }
         } else if (payload.indexOf("\"response.done\"") > 0 || payload.indexOf("\"response.audio.done\"") > 0) {
@@ -391,31 +401,19 @@ void manage_websockets() {
         }
 
         if (g_state == STATE_RECORDING) {
-            size_t avail = in_ring_buf->available();
-            if (avail >= 2048) {
-                uint8_t* chunk = (uint8_t*)malloc(2048);
-                if (chunk) {
-                    in_ring_buf->read(chunk, 2048);
-                    String b64 = encodeBase64(chunk, 2048);
-                    // chunk send is silent to avoid flooding serial TX buffer
-                    wsClient.send("{\"type\":\"input_audio_buffer.append\",\"audio\":\"" + b64 + "\"}");
-                    free(chunk);
-                }
+            if (in_ring_buf->available() >= AUDIO_CHUNK_SIZE) {
+                in_ring_buf->read(s_mic_chunk, AUDIO_CHUNK_SIZE);
+                sendAudioChunk(wsClient, s_mic_chunk, AUDIO_CHUNK_SIZE);
             }
         }
 
         if (cmd_commit) {
             cmd_commit = false;
-            size_t avail = in_ring_buf->available();
-            if (avail > 0) {
-                uint8_t* chunk = (uint8_t*)malloc(avail);
-                if (chunk) {
-                    in_ring_buf->read(chunk, avail);
-                    String b64 = encodeBase64(chunk, avail);
-                    // final chunk send is silent to avoid flooding serial TX buffer
-                    wsClient.send("{\"type\":\"input_audio_buffer.append\",\"audio\":\"" + b64 + "\"}");
-                    free(chunk);
-                }
+            // Flush remaining mic buffer in AUDIO_CHUNK_SIZE chunks — no malloc needed
+            while (in_ring_buf->available() > 0) {
+                size_t to_read = min((size_t)AUDIO_CHUNK_SIZE, in_ring_buf->available());
+                in_ring_buf->read(s_mic_chunk, to_read);
+                sendAudioChunk(wsClient, s_mic_chunk, to_read);
             }
             CPRINTLN("WS: Sending input_audio_buffer.commit");
             wsClient.send("{\"type\":\"input_audio_buffer.commit\"}");
@@ -735,8 +733,9 @@ void setup() {
   set_status_led_rgb(0, 0, 0);
 
   // Allocate large buffers in PSRAM
-  in_ring_buf = new PSRAMRingBuffer(16000 * 2 * 2);  // 2s @ 16kHz 16-bit
-  out_ring_buf = new PSRAMRingBuffer(24000 * 2 * 5); // 5s @ 24kHz 16-bit
+  in_ring_buf   = new PSRAMRingBuffer(16000 * 2 * 2);  // 2s @ 16kHz 16-bit
+  out_ring_buf  = new PSRAMRingBuffer(24000 * 2 * 5);  // 5s @ 24kHz 16-bit
+  s_decode_buf  = (uint8_t*)ps_malloc(AUDIO_DECODE_SIZE);
 
   init_wifi_and_time();
   setup_i2s_mic();
