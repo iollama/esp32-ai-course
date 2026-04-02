@@ -1,0 +1,29 @@
+#ifndef CONFIG_H
+#define CONFIG_H
+
+/* ************************************************************************
+   udi\keys.h contains my home network and OPENAI keys. 
+   you will not have this file. Remove the include line and put the
+   relevant network  andopenai keys.
+/* ************************************************************************/
+
+#include "C:\Users\udi\keys.h"  
+// =====================================
+// WiFi Configuration
+// =====================================
+#ifndef WIFI_SSID
+#define WIFI_SSID "YOUR_WIFI_SSID"
+#endif
+#ifndef WIFI_PASSWORD
+#define WIFI_PASSWORD "YOUR_WIFI_PASSWORD"
+#endif
+
+// =====================================
+// OpenAI API Configuration
+// =====================================
+#ifndef OPENAI_API_KEY
+#define OPENAI_API_KEY "YOUR_OPENAI_API_KEY"
+#endif
+
+
+#endif // CONFIG_H
