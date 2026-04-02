@@ -264,11 +264,17 @@ PSRAM buffers are allocated via `ps_malloc()` to keep the internal heap free for
 ## Known Issues & Bugs Fixed
 
 ### 1. ArduinoWebsockets — ESP32 `setInsecure()` not propagated
-**File:** `ArduinoWebsockets/src/websockets_client.cpp`
+**Files:** `src/tiny_websockets/network/esp32/esp32_tcp.hpp`, `src/websockets_client.cpp`
 
-The `upgradeToSecuredConnection()` method had an `else { client->setInsecure(); }` fallback for ESP8266 but not ESP32. Without it, the internal `WiFiClientSecure` attempted certificate verification with no CA bundle, silently failing every WSS connection attempt.
+Two upstream bugs in ArduinoWebsockets v0.5.3 caused every WSS connection to fail silently on
+ESP32: `SecuredEsp32TcpClient` was missing a `setInsecure()` method, and
+`upgradeToSecuredConnection()` had no fallback to call it on the ESP32 branch (unlike ESP8266).
+Result: `WiFiClientSecure` ran certificate verification with no CA bundle and rejected the
+connection every time.
 
-See `LIBRARY_PATCHES.md` for the exact fix.
+The library is **vendored** into this sketch's `src/` directory with the fixes already applied —
+no global library patching required. Arduino IDE compiles `src/` automatically and adds it to
+the include path. See `LIBRARY_PATCHES.md` for the exact code changes and upgrade instructions.
 
 ### 2. Audio delta field name mismatch
 **File:** `voice_agent_4.ino`

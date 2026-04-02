@@ -1,40 +1,74 @@
 # ArduinoWebsockets Library Patches
 
-These patches are required for the ESP32 WSS (secure WebSocket) connection to OpenAI's Realtime API to work correctly.
+## How patches are applied — vendored `src/` approach
 
-## Problem
+The patched library source lives inside this sketch at `src/` (e.g. `src/ArduinoWebsockets.h`,
+`src/tiny_websockets/`, `src/websockets_client.cpp`, etc.).
 
-`WebsocketsClient::setInsecure()` has no effect on ESP32. The internal `upgradeToSecuredConnection()` method has an `else { client->setInsecure(); }` fallback for ESP8266, but the ESP32 branch is missing it entirely. As a result, the underlying `WiFiClientSecure` attempts certificate verification with no CA bundle, and the WebSocket handshake silently fails every time.
+Arduino IDE compiles all `.cpp` files in a sketch's `src/` subdirectory and adds `src/` to the
+compiler include path. This means:
+
+- **No global library installation needed** for ArduinoWebsockets — the local copy is used automatically.
+- **No manual patching** — the patches are already applied to the files in `src/`.
+- The sketch includes the library with a relative path to prevent Arduino from auto-detecting
+  and pulling in the globally installed (unpatched) copy:
+  ```cpp
+  #include "src/ArduinoWebsockets.h"   // local patched copy
+  ```
+
+ArduinoJson and Adafruit NeoPixel are still installed the normal way via the Arduino Library Manager.
+
+### What was changed from the upstream library
+
+All internal `#include <tiny_websockets/...>` angle-bracket includes were converted to relative
+`#include "..."` paths so the library is self-contained without needing its `src/` directory on
+the compiler include path.  The non-ESP32 platform directories (ESP8266, Linux, Windows, Teensy41)
+were also removed since this sketch only targets ESP32-S3.
+
+### Updating the library
+
+If you need to update to a newer version of ArduinoWebsockets:
+
+1. Download the new version.
+2. Copy its `src/` contents over the `src/` directory in this sketch.
+3. Re-apply the two bug fixes below.
+4. Convert all `#include <tiny_websockets/...>` to relative `#include "..."` paths (see commit
+   history for the full list of changes).
 
 ---
 
-## Patch 1: `esp32_tcp.hpp`
+## Bug fix 1 — `esp32_tcp.hpp`: missing `setInsecure()` on `SecuredEsp32TcpClient`
 
-**File:** `<Arduino libraries folder>/ArduinoWebsockets/src/tiny_websockets/network/esp32/esp32_tcp.hpp`
+**File:** `src/tiny_websockets/network/esp32/esp32_tcp.hpp`
 
-Add a `setInsecure()` method to `SecuredEsp32TcpClient`:
+**Problem:** `SecuredEsp32TcpClient` had no `setInsecure()` method. When
+`upgradeToSecuredConnection()` tried to call it, the call was silently ignored, leaving
+`WiFiClientSecure` in certificate-verification mode with no CA bundle — every WSS connection
+failed.
+
+**Fix:** Add the method to `SecuredEsp32TcpClient`:
 
 ```cpp
 class SecuredEsp32TcpClient : public GenericEspTcpClient<WiFiClientSecure> {
 public:
-  // ADD THIS METHOD:
-  void setInsecure() {
+  void setInsecure() {       // ADD THIS
     this->client.setInsecure();
   }
-
-  void setCACert(const char* ca_cert) {
-    this->client.setCACert(ca_cert);
-  }
-  // ... rest of class unchanged
+  void setCACert(const char* ca_cert) { ... }
+  // ... rest unchanged
 ```
 
 ---
 
-## Patch 2: `websockets_client.cpp`
+## Bug fix 2 — `websockets_client.cpp`: `setInsecure()` never called on ESP32
 
-**File:** `<Arduino libraries folder>/ArduinoWebsockets/src/websockets_client.cpp`
+**File:** `src/websockets_client.cpp`
 
-In `WebsocketsClient::upgradeToSecuredConnection()`, find the `#elif defined(ESP32)` block and add an `else` branch after `setPrivateKey`:
+**Problem:** `upgradeToSecuredConnection()` had an `else { client->setInsecure(); }` fallback for
+ESP8266 but the `#elif defined(ESP32)` block was missing it. Without a CA cert configured, no
+fallback to insecure mode was triggered, so WSS always failed silently.
+
+**Fix:** Add the `else` branch in the `#elif defined(ESP32)` block:
 
 ```cpp
     #elif defined(ESP32)
@@ -47,8 +81,7 @@ In `WebsocketsClient::upgradeToSecuredConnection()`, find the `#elif defined(ESP
         if(this->_optional_ssl_private_key) {
             client->setPrivateKey(this->_optional_ssl_private_key);
         } else {
-            // ADD THIS: without this, setInsecure() is never called and WSS always fails on ESP32
-            client->setInsecure();
+            client->setInsecure();   // ADD THIS
         }
     #endif
 ```
@@ -57,6 +90,5 @@ In `WebsocketsClient::upgradeToSecuredConnection()`, find the `#elif defined(ESP
 
 ## Notes
 
-- Tested with ArduinoWebsockets v0.5.3 on ESP32-S3
-- The Arduino libraries folder is typically at `~/Documents/Arduino/libraries/`
-- These are upstream bugs; check if a newer version of the library has fixed them before applying manually
+- Tested with ArduinoWebsockets v0.5.3 on ESP32-S3.
+- These are upstream bugs; check whether a newer version has fixed them before re-applying.

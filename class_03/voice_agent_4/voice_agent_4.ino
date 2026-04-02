@@ -24,7 +24,7 @@
 #include <HTTPClient.h>
 #include <time.h>
 #include <ArduinoJson.h>
-#include <ArduinoWebsockets.h>
+#include "src/ArduinoWebsockets.h"
 
 #include <Preferences.h>
 #include <WebServer.h>
