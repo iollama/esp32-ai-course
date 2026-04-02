@@ -53,6 +53,7 @@ boolean ap_mode = false;
 #define SAMPLE_RATE_OUT  24000
 #define JITTER_BUFFER_MS 300
 #define JITTER_BUFFER_BYTES (SAMPLE_RATE_OUT * 2 * JITTER_BUFFER_MS / 1000)
+#define LOW_WATER_BYTES    (1024 * 3)  // ~64ms at 24kHz — rebuffer only when nearly empty
 
 #define DEFAULT_SYS_INSTRUCTION "You are a helpful voice assistant. Answer concisely and conversationally."
 #define DEFAULT_TEMPERATURE      0.7f
@@ -734,7 +735,7 @@ void setup() {
 
   // Allocate large buffers in PSRAM
   in_ring_buf   = new PSRAMRingBuffer(16000 * 2 * 2);  // 2s @ 16kHz 16-bit
-  out_ring_buf  = new PSRAMRingBuffer(24000 * 2 * 5);  // 5s @ 24kHz 16-bit
+  out_ring_buf  = new PSRAMRingBuffer(24000 * 2 * 30);  // 20s @ 24kHz 16-bit
   s_decode_buf  = (uint8_t*)ps_malloc(AUDIO_DECODE_SIZE);
 
   init_wifi_and_time();
@@ -827,7 +828,14 @@ void loop() {
       }
 
       if (g_state == STATE_SPEAKING) {
-          if (avail > 0) {
+          if (avail < LOW_WATER_BYTES && !ws_response_done) {
+              // Low water — rebuffer to avoid choppy underrun gaps mid-stream
+              CPRINTF("Speaker: Rebuffering (only %d bytes left)\n", avail);
+              setAssistantState(STATE_THINKING);
+              uint8_t zero[1024] = {0};
+              size_t bw = 0;
+              i2s_write(I2S_NUM_1, zero, 1024, &bw, 0);
+          } else if (avail > 0) {
               size_t to_read = (avail > 1024) ? 1024 : avail;
               uint8_t spk_buf[1024];
               out_ring_buf->read(spk_buf, to_read);
@@ -840,9 +848,9 @@ void loop() {
                   }
               }
               size_t bw = 0;
-              i2s_write(I2S_NUM_1, spk_buf, to_read, &bw, portMAX_DELAY); // Keeps DMA backpressured
+              i2s_write(I2S_NUM_1, spk_buf, to_read, &bw, portMAX_DELAY);
           } else {
-              // Underrun
+              // True underrun (avail == 0)
               uint8_t zero[1024] = {0};
               size_t bw = 0;
               i2s_write(I2S_NUM_1, zero, 1024, &bw, 0);
