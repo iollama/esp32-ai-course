@@ -318,7 +318,37 @@
         },
         {
           "name": "image generation",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const response = pm.response.json();\r",
+                  "\r",
+                  "if (response.data && response.data[0] && response.data[0].b64_json) {\r",
+                  "    const template = `\r",
+                  "        <div style=\"padding: 10px;\">\r",
+                  "            <img src=\"data:image/png;base64,{{base64_data}}\" style=\"max-width: 100%; height: auto; border: 1px solid #ccc;\"/>\r",
+                  "        </div>\r",
+                  "    `;\r",
+                  "    \r",
+                  "    pm.visualizer.set(template, {\r",
+                  "        base64_data: response.data[0].b64_json\r",
+                  "    });\r",
+                  "} else {\r",
+                  "    console.log(\"No base64 image data found in the response payload.\");\r",
+                  "}"
+                ],
+                "type": "text/javascript",
+                "packages": {},
+                "requests": {}
+              }
+            }
+          ],
           "request": {
+            "auth": {
+              "type": "noauth"
+            },
             "method": "POST",
             "header": [
               {
@@ -329,7 +359,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\r\n  \"model\": \"dall-e-3\",\r\n  \"prompt\": \"A highly detailed, cinematic shot of a maker working on an ESP project as the world around him collapses\",\r\n  \"n\": 1,\r\n  \"size\": \"1024x1024\",\r\n  \"quality\": \"standard\",\r\n  \"style\": \"vivid\"\r\n}\r\n",
+              "raw": "{\r\n  \"model\": \"gpt-image-2\",\r\n  \"prompt\": \"A futuristic classroom with student learning about EPS32 proejcts. teacher is standing infront of a whiteboard. Neon lights, cyberpunk aesthetic\",\r\n  \"n\": 1,\r\n  \"size\": \"1024x1024\",\r\n  \"quality\": \"low\"\r\n}\r\n",
               "options": {
                 "raw": {
                   "language": "json"
@@ -1025,73 +1055,6 @@
                 "v1",
                 "audio",
                 "transcriptions"
-              ]
-            }
-          },
-          "response": []
-        },
-        {
-          "name": "image generation",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "exec": [
-                  "const response = pm.response.json();\r",
-                  "\r",
-                  "if (response.data && response.data[0] && response.data[0].b64_json) {\r",
-                  "    const template = `\r",
-                  "        <div style=\"padding: 10px;\">\r",
-                  "            <img src=\"data:image/png;base64,{{base64_data}}\" style=\"max-width: 100%; height: auto; border: 1px solid #ccc;\"/>\r",
-                  "        </div>\r",
-                  "    `;\r",
-                  "    \r",
-                  "    pm.visualizer.set(template, {\r",
-                  "        base64_data: response.data[0].b64_json\r",
-                  "    });\r",
-                  "} else {\r",
-                  "    console.log(\"No base64 image data found in the response payload.\");\r",
-                  "}"
-                ],
-                "type": "text/javascript",
-                "packages": {},
-                "requests": {}
-              }
-            }
-          ],
-          "request": {
-            "auth": {
-              "type": "noauth"
-            },
-            "method": "POST",
-            "header": [
-              {
-                "key": "Authorization",
-                "value": "Bearer {{OPENAI_KEY}}",
-                "type": "text"
-              }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\r\n  \"model\": \"gpt-image-2\",\r\n  \"prompt\": \"A futuristic classroom with student learning about EPS32 proejcts. teacher is standing infront of a whiteboard. Neon lights, cyberpunk aesthetic\",\r\n  \"n\": 1,\r\n  \"size\": \"1024x1024\",\r\n  \"quality\": \"low\"\r\n}\r\n",
-              "options": {
-                "raw": {
-                  "language": "json"
-                }
-              }
-            },
-            "url": {
-              "raw": "https://api.openai.com/v1/images/generations",
-              "protocol": "https",
-              "host": [
-                "api",
-                "openai",
-                "com"
-              ],
-              "path": [
-                "v1",
-                "images",
-                "generations"
               ]
             }
           },
