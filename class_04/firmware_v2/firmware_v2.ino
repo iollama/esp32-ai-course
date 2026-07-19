@@ -1,12 +1,15 @@
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <Update.h>
+#include <Adafruit_NeoPixel.h>
 
-const char* firmware_v1_url = "https://raw.githubusercontent.com/iollama/esp32-ai-course/main/class_04/firmware_v1/build/esp32.esp32.esp32c3/firmware_v1.ino.bin";
-const char* firmware_v2_url = "https://raw.githubusercontent.com/iollama/esp32-ai-course/main/class_04/firmware_v2/build/esp32.esp32.esp32c3/firmware_v2.ino.bin";
+const char* firmware_v1_url = "https://raw.githubusercontent.com/iollama/esp32-ai-course/main/class_04/firmware_v1/build/esp32.esp32.esp32s3/firmware_v1.ino.bin";
+const char* firmware_v2_url = "https://raw.githubusercontent.com/iollama/esp32-ai-course/main/class_04/firmware_v2/build/esp32.esp32.esp32s3/firmware_v2.ino.bin";
 
 const int BUTTON_PIN = 4;
-const int LED_PIN = 8;
+const int RGB_LED_PIN = 48;  // onboard NeoPixel on ESP32-S3
+
+Adafruit_NeoPixel pixel(1, RGB_LED_PIN, NEO_GRB + NEO_KHZ800);
 
 #define VERSION 2
 
@@ -48,6 +51,13 @@ void performOTA(const char* url) {
       return;
     }
 
+    // Live download/write progress on serial
+    Update.onProgress([](size_t done, size_t total) {
+      int percent = (total > 0) ? (done * 100) / total : 0;
+      Serial.println("Downloading: " + String(percent) + "% (" +
+                     String(done) + " / " + String(total) + " bytes)");
+    });
+
     size_t written = Update.writeStream(*stream);
     Serial.println("Written: " + String(written) + " / " + String(contentLength));
 
@@ -70,11 +80,15 @@ void performOTA(const char* url) {
 
 
 void loop() {
-  // Blink VERSION times
+  // Flash VERSION times: green for V1, red for V2
+  uint32_t color = (VERSION == 1) ? pixel.Color(0, 255, 0)   // green
+                                  : pixel.Color(255, 0, 0);  // red
   for (int i = 0; i < VERSION; i++) {
-    digitalWrite(LED_PIN, LOW);  // ON (active LOW)
+    pixel.setPixelColor(0, color);  // ON
+    pixel.show();
     delay(100);
-    digitalWrite(LED_PIN, HIGH);  // OFF
+    pixel.clear();  // OFF
+    pixel.show();
     delay(100);
   }
 
@@ -101,9 +115,11 @@ void setup() {
   Serial.setTxTimeoutMs(0);
   delay(3000); 
 
-  pinMode(LED_PIN, OUTPUT);
+  pixel.begin();
+  pixel.setBrightness(50);
+  pixel.clear();  // OFF
+  pixel.show();
   pinMode(BUTTON_PIN, INPUT_PULLUP);
-  digitalWrite(LED_PIN, HIGH);  // OFF
 
   Serial.println("OTA update demo");
   Serial.println("Running firmware VERSION: " + String(VERSION));
